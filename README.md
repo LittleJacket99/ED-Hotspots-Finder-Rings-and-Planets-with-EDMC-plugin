@@ -4,8 +4,6 @@
 
 <h1 align="center">ED Hotspots Finder - Rings & Planets + EDMC Plugin</h1>
 
-<p align="center"><strong><big>Help build the shared Community Deposits database.</big></strong></p>
-
 
 <p align="center">
   <a href="https://github.com/LittleJacket99/ED-Hotspots-Finder-Rings-and-Planets-with-EDMC-plugin/releases/latest">Download latest Windows release</a>
