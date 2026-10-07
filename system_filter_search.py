@@ -133,6 +133,7 @@ def _query_spansh_systems(
 
     systems = []
     distances = {}
+    metadata = {}
     seen = set()
     page = 0
 
