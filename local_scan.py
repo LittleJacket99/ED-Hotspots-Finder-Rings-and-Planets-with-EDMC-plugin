@@ -12,7 +12,9 @@ import system_filter_search
 
 
 DISTANCE_HEADER = "Distance (LY)"
-SYSTEM_HEADERS = ["System"]
+SYSTEM_HEADERS = ["System", "Population", "Powerplay Progress"]
+POPULATION_HEADER = "Population"
+POWER_PROGRESS_HEADER = "Powerplay Progress"
 
 
 class LocalScanError(RuntimeError):
@@ -164,17 +166,49 @@ def _add_distance_column(headers, rows, distances):
     return headers, output_rows
 
 
-def _build_system_results(systems, distances, show_distance):
+def _format_population(value):
+    if value in (None, ""):
+        return ""
+    try:
+        return f"{int(float(value)):,}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_power_progress(value):
+    if value in (None, ""):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text.endswith("%"):
+        return text
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return text
+    if 0 <= number <= 1:
+        number *= 100
+    return f"{number:.2f}".rstrip("0").rstrip(".") + "%"
+
+
+def _build_system_results(systems, distances, metadata, show_distance):
     headers = list(SYSTEM_HEADERS)
     if show_distance:
-        headers.append(DISTANCE_HEADER)
+        headers.insert(0, DISTANCE_HEADER)
 
     rows = []
     for system in systems:
-        row = {"System": system}
+        key = engine.norm(system)
+        info = metadata.get(key, {})
+        row = {
+            "System": system,
+            POPULATION_HEADER: _format_population(info.get("Population", "")),
+            POWER_PROGRESS_HEADER: _format_power_progress(info.get("Powerplay Progress", "")),
+        }
         if show_distance:
             row[DISTANCE_HEADER] = _format_result_distance(
-                distances.get(engine.norm(system), "")
+                distances.get(key, "")
             )
         rows.append(row)
     return headers, rows
@@ -213,14 +247,15 @@ def _resolve_systems(config, cancel_event=None):
     # coordinate filtering rather than asking Spansh for every system in the
     # surrounding sphere and intersecting afterwards.
     if manual_systems and reference_system and not faction_name and not power_name:
-        return system_filter_search.filter_systems_within_distance(
+        systems, distances = system_filter_search.filter_systems_within_distance(
             reference_system,
             manual_systems,
             max_distance_ly=max_distance_ly,
             cancel_event=cancel_event,
         )
+        return systems, distances, {}
 
-    resolved, distances = system_filter_search.search_systems_by_filters(
+    resolved, distances, metadata = system_filter_search.search_systems_by_filters(
         faction_name,
         power_name,
         selected_power_states,
@@ -244,7 +279,12 @@ def _resolve_systems(config, cancel_event=None):
         for key, value in distances.items()
         if key in effective_keys
     }
-    return effective, distances
+    metadata = {
+        key: value
+        for key, value in metadata.items()
+        if key in effective_keys
+    }
+    return effective, distances, metadata
 
 
 def _community_systems(rows):
@@ -316,12 +356,14 @@ def _load_community_results(
     return headers, rows, systems, distances
 
 
-def _empty_result(status, config, *, systems=None, system_distances=None):
+def _empty_result(status, config, *, systems=None, system_distances=None, system_metadata=None):
     systems = list(systems or [])
     system_distances = dict(system_distances or {})
+    system_metadata = dict(system_metadata or {})
     system_headers, system_rows = _build_system_results(
         systems,
         system_distances,
+        system_metadata,
         bool(config["reference_system"]),
     )
     return {
@@ -374,7 +416,7 @@ def run_local_scan(config, cancel_event=None):
                 "Add at least one manual system or set a System Filter."
             )
 
-        systems, system_distances = _resolve_systems(
+        systems, system_distances, system_metadata = _resolve_systems(
             config,
             cancel_event=cancel_event,
         )
@@ -413,6 +455,7 @@ def run_local_scan(config, cancel_event=None):
 
     systems = []
     system_distances = {}
+    system_metadata = {}
 
     # Hotspots/Planets require a finite system candidate set. Community-only is
     # allowed with no Systems/System Filters and simply returns the whole DB.
@@ -553,6 +596,7 @@ def run_local_scan(config, cancel_event=None):
     system_headers, system_rows = _build_system_results(
         systems,
         system_distances,
+        system_metadata,
         show_reference_distance,
     )
 
