@@ -241,7 +241,7 @@ def _resolve_systems(config, cancel_event=None):
     selected_power_states = _selected_power_states(config)
 
     if not _has_system_filters(config):
-        return manual_systems, {}
+        return manual_systems, {}, {}
 
     # A manual list + Reference only is a small candidate set, so use direct
     # coordinate filtering rather than asking Spansh for every system in the
@@ -266,7 +266,7 @@ def _resolve_systems(config, cancel_event=None):
     )
 
     if not manual_systems:
-        return resolved, distances
+        return resolved, distances, metadata
 
     effective = _intersect_systems(
         manual_systems,
@@ -425,6 +425,7 @@ def run_local_scan(config, cancel_event=None):
         system_headers, system_rows = _build_system_results(
             systems,
             system_distances,
+            system_metadata,
             bool(reference_system),
         )
         return {
@@ -465,7 +466,7 @@ def run_local_scan(config, cancel_event=None):
                 "Hotspots/Planets require manual systems or a System Filter."
             )
 
-        systems, system_distances = _resolve_systems(
+        systems, system_distances, system_metadata = _resolve_systems(
             config,
             cancel_event=cancel_event,
         )
@@ -568,6 +569,7 @@ def run_local_scan(config, cancel_event=None):
             )
             systems = community_systems
             system_distances = community_distances
+            system_metadata = {}
 
     show_reference_distance = bool(reference_system)
     if show_reference_distance:
