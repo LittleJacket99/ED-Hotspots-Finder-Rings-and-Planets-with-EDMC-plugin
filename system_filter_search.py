@@ -205,13 +205,18 @@ def _query_spansh_systems(
                 except (TypeError, ValueError):
                     pass
 
+            metadata[key] = {
+                "Population": item.get("population", ""),
+                "Powerplay Progress": item.get("power_state_control_progress", ""),
+            }
+
         if not results or (page + 1) * engine.PAGE_SIZE >= total:
             break
 
         page += 1
         engine.cancellable_sleep(engine.DELAY, cancel_event)
 
-    return systems, distances
+    return systems, distances, metadata
 
 
 def search_systems_by_filters(
@@ -344,10 +349,11 @@ def search_systems_by_filters(
 
     all_systems = []
     all_distances = {}
+    all_metadata = {}
     seen = set()
 
     for filters, power_match_field, states_for_query in query_specs:
-        systems, distances = _query_spansh_systems(
+        systems, distances, metadata = _query_spansh_systems(
             filters,
             faction_name=faction_name,
             power_name=power_name,
@@ -364,6 +370,8 @@ def search_systems_by_filters(
                 all_systems.append(system_name)
             if key in distances:
                 all_distances[key] = distances[key]
+            if key in metadata:
+                all_metadata[key] = metadata[key]
 
     engine.check_cancel(cancel_event)
 
@@ -380,7 +388,7 @@ def search_systems_by_filters(
     print(f"Systems matching filters: {len(all_systems)}")
 
     if include_distances:
-        return all_systems, all_distances
+        return all_systems, all_distances, all_metadata
     return all_systems
 
 
