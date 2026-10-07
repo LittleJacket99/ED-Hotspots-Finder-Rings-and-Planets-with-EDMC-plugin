@@ -265,7 +265,7 @@ def search_systems_by_filters(
             )
 
     if not faction_name and not power_name and not reference_system:
-        return ([], {}) if include_distances else []
+        return ([], {}, {}) if include_distances else []
 
     print("Searching Spansh systems with filters:")
     if faction_name:
