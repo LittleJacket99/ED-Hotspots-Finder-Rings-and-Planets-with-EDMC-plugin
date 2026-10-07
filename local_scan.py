@@ -345,7 +345,7 @@ def _load_community_results(
     candidate_config["systems"] = database_systems
 
     if _has_system_filters(candidate_config):
-        systems, distances = _resolve_systems(
+        systems, distances, _metadata = _resolve_systems(
             candidate_config,
             cancel_event=cancel_event,
         )
