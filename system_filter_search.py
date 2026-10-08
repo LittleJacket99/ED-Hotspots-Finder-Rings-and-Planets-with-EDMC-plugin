@@ -410,7 +410,7 @@ def fetch_system_metadata(system_name, *, cancel_event=None):
         },
     )
     data = response.json()
-    system = data.get("system") or data
+    system = data.get("record") or data
     return {
         "Population": system.get("population", ""),
         "Power State": str(system.get("power_state", "") or "").strip(),
