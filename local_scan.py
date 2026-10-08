@@ -6,13 +6,15 @@ This module contains no Google Sheets calls and uses the dedicated v8
 Google-free Finder engine.
 """
 
+from datetime import datetime, timezone
+
 import community_deposits
 import finder_engine as engine
 import system_filter_search
 
 
 DISTANCE_HEADER = "Distance (LY)"
-SYSTEM_HEADERS = ["System", "Population", "Power State", "Powerplay Progress"]
+SYSTEM_HEADERS = ["System", "Population", "Power State", "Powerplay Progress", "Last Update"]
 
 
 class LocalScanError(RuntimeError):
@@ -182,6 +184,20 @@ def _format_powerplay_progress(value):
         return str(value)
 
 
+def _format_last_update(value):
+    if value in (None, ""):
+        return ""
+    text = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.astimezone(timezone.utc)
+        return parsed.strftime("%Y-%m-%d %H:%M UTC")
+    except (TypeError, ValueError):
+        return text
+
+
 def _build_system_results(systems, distances, metadata, show_distance):
     headers = list(SYSTEM_HEADERS)
     if show_distance:
@@ -199,6 +215,9 @@ def _build_system_results(systems, distances, metadata, show_distance):
             "Power State": str(info.get("Power State", "") or ""),
             "Powerplay Progress": _format_powerplay_progress(
                 info.get("Powerplay Progress", "")
+            ),
+            "Last Update": _format_last_update(
+                info.get("Last Update", "")
             ),
         }
         if show_distance:
