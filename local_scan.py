@@ -12,7 +12,7 @@ import system_filter_search
 
 
 DISTANCE_HEADER = "Distance (LY)"
-SYSTEM_HEADERS = ["System"]
+SYSTEM_HEADERS = ["System", "Population", "Power State"]
 
 
 class LocalScanError(RuntimeError):
@@ -164,17 +164,34 @@ def _add_distance_column(headers, rows, distances):
     return headers, output_rows
 
 
-def _build_system_results(systems, distances, show_distance):
+def _format_population(value):
+    if value in (None, ""):
+        return ""
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _build_system_results(systems, distances, metadata, show_distance):
     headers = list(SYSTEM_HEADERS)
     if show_distance:
-        headers.append(DISTANCE_HEADER)
+        headers.remove(DISTANCE_HEADER) if DISTANCE_HEADER in headers else None
+        headers.insert(0, DISTANCE_HEADER)
 
     rows = []
+    metadata = metadata or {}
     for system in systems:
-        row = {"System": system}
+        key = engine.norm(system)
+        info = metadata.get(key) or {}
+        row = {
+            "System": system,
+            "Population": _format_population(info.get("Population", "")),
+            "Power State": str(info.get("Power State", "") or ""),
+        }
         if show_distance:
             row[DISTANCE_HEADER] = _format_result_distance(
-                distances.get(engine.norm(system), "")
+                distances.get(key, "")
             )
         rows.append(row)
     return headers, rows
@@ -207,7 +224,11 @@ def _resolve_systems(config, cancel_event=None):
     selected_power_states = _selected_power_states(config)
 
     if not _has_system_filters(config):
-        return manual_systems, {}
+        metadata = system_filter_search.enrich_system_metadata(
+            manual_systems,
+            cancel_event=cancel_event,
+        )
+        return manual_systems, {}, metadata
 
     # A manual list + Reference only is a small candidate set, so use direct
     # coordinate filtering rather than asking Spansh for every system in the
@@ -220,7 +241,7 @@ def _resolve_systems(config, cancel_event=None):
             cancel_event=cancel_event,
         )
 
-    resolved, distances = system_filter_search.search_systems_by_filters(
+    resolved, distances, metadata = system_filter_search.search_systems_by_filters(
         faction_name,
         power_name,
         selected_power_states,
@@ -231,7 +252,7 @@ def _resolve_systems(config, cancel_event=None):
     )
 
     if not manual_systems:
-        return resolved, distances
+        return resolved, distances, metadata
 
     effective = _intersect_systems(
         manual_systems,
@@ -244,7 +265,12 @@ def _resolve_systems(config, cancel_event=None):
         for key, value in distances.items()
         if key in effective_keys
     }
-    return effective, distances
+    metadata = {
+        key: value
+        for key, value in metadata.items()
+        if key in effective_keys
+    }
+    return effective, distances, metadata
 
 
 def _community_systems(rows):
@@ -322,6 +348,7 @@ def _empty_result(status, config, *, systems=None, system_distances=None):
     system_headers, system_rows = _build_system_results(
         systems,
         system_distances,
+        system_metadata,
         bool(config["reference_system"]),
     )
     return {
@@ -374,7 +401,7 @@ def run_local_scan(config, cancel_event=None):
                 "Add at least one manual system or set a System Filter."
             )
 
-        systems, system_distances = _resolve_systems(
+        systems, system_distances, system_metadata = _resolve_systems(
             config,
             cancel_event=cancel_event,
         )
@@ -413,6 +440,7 @@ def run_local_scan(config, cancel_event=None):
 
     systems = []
     system_distances = {}
+    system_metadata = {}
 
     # Hotspots/Planets require a finite system candidate set. Community-only is
     # allowed with no Systems/System Filters and simply returns the whole DB.
@@ -550,9 +578,15 @@ def run_local_scan(config, cancel_event=None):
     # Keep a compact Systems result alongside every scan output. This is the
     # resolved candidate set used by Hotspots/Planets, or the effective
     # database-system set for Community-only scans.
+    system_metadata = system_filter_search.enrich_system_metadata(
+        systems,
+        system_metadata,
+        cancel_event=cancel_event,
+    )
     system_headers, system_rows = _build_system_results(
         systems,
         system_distances,
+        system_metadata,
         show_reference_distance,
     )
 
