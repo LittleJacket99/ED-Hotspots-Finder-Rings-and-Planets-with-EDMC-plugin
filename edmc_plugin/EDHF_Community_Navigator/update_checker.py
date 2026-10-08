@@ -25,14 +25,32 @@ def _version_tuple(value: Any) -> tuple[int, int, int] | None:
     return tuple(int(part or 0) for part in match.groups())
 
 
+def _plugin_version_from_assets(payload: dict[str, Any]) -> str:
+    """Read the Companion version from its release ZIP asset name."""
+
+    for asset in payload.get("assets") or []:
+        name = str(asset.get("name") or "").strip()
+
+        match = re.fullmatch(
+            r"Hotspots-Finder-EDMC-Plugin-v(\d+(?:\.\d+){0,2})\.zip",
+            name,
+            re.IGNORECASE,
+        )
+
+        if match:
+            return match.group(1)
+
+    return ""
+
+
 def check_for_update(current_version: str, timeout: float = 4.0) -> dict[str, Any]:
-    """Check the shared Finder + Companion GitHub release channel."""
+    """Check the Companion version independently from the Finder version."""
 
     request = urllib.request.Request(
         LATEST_RELEASE_API,
         headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": f"Hotspots-Finder-Deposits-Companion/{current_version}",
+            "User-Agent": f"Hotspots-Finder-EDMC-Plugin/{current_version}",
         },
     )
 
@@ -40,23 +58,29 @@ def check_for_update(current_version: str, timeout: float = 4.0) -> dict[str, An
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.load(response)
 
-        latest_version = str(payload.get("tag_name") or "").strip()
+        latest_version = _plugin_version_from_assets(payload)
+
+        if not latest_version:
+            raise ValueError(
+                "GitHub release does not contain a Companion plugin package"
+            )
+
         current_key = _version_tuple(current_version)
         latest_key = _version_tuple(latest_version)
 
         if current_key is None or latest_key is None:
-            raise ValueError("GitHub returned an unsupported version tag")
+            raise ValueError("GitHub returned an unsupported plugin version")
 
         return {
             "ok": True,
             "update_available": latest_key > current_key,
             "current_version": str(current_version),
-            "latest_version": latest_version.lstrip("vV"),
+            "latest_version": latest_version,
             "release_url": str(
                 payload.get("html_url") or LATEST_RELEASE_PAGE
             ),
             "release_name": str(
-                payload.get("name") or latest_version
+                payload.get("name") or payload.get("tag_name") or latest_version
             ),
         }
 
