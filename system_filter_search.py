@@ -202,6 +202,7 @@ def _query_spansh_systems(
             metadata[key] = {
                 "Population": item.get("population", ""),
                 "Power State": str(item.get("power_state", "") or "").strip(),
+                "Powerplay Progress": item.get("power_state_control_progress", ""),
             }
 
             if reference_system:
@@ -393,7 +394,7 @@ def search_systems_by_filters(
 
 
 def fetch_system_metadata(system_name, *, cancel_event=None):
-    """Return Population and Power State for one exact system from Spansh."""
+    """Return system metadata for one exact system from Spansh."""
     item = _lookup_system_record(system_name, cancel_event=cancel_event)
     canonical = str(item.get("name") or system_name).strip()
     id64 = item.get("id64")
@@ -413,6 +414,7 @@ def fetch_system_metadata(system_name, *, cancel_event=None):
     return {
         "Population": system.get("population", ""),
         "Power State": str(system.get("power_state", "") or "").strip(),
+        "Powerplay Progress": system.get("power_state_control_progress", ""),
     }
 
 
@@ -423,7 +425,11 @@ def enrich_system_metadata(systems, metadata=None, *, cancel_event=None):
         engine.check_cancel(cancel_event)
         key = engine.norm(system)
         current = result.get(key) or {}
-        if "Population" in current and "Power State" in current:
+        if (
+            "Population" in current
+            and "Power State" in current
+            and "Powerplay Progress" in current
+        ):
             continue
         try:
             result[key] = fetch_system_metadata(system, cancel_event=cancel_event)
@@ -432,6 +438,7 @@ def enrich_system_metadata(systems, metadata=None, *, cancel_event=None):
             result[key] = {
                 "Population": current.get("Population", ""),
                 "Power State": current.get("Power State", ""),
+                "Powerplay Progress": current.get("Powerplay Progress", ""),
             }
     return result
 
