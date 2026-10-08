@@ -12,7 +12,7 @@ import system_filter_search
 
 
 DISTANCE_HEADER = "Distance (LY)"
-SYSTEM_HEADERS = ["System", "Population", "Power State"]
+SYSTEM_HEADERS = ["System", "Population", "Power State", "Powerplay Progress"]
 
 
 class LocalScanError(RuntimeError):
@@ -173,6 +173,15 @@ def _format_population(value):
         return str(value)
 
 
+def _format_powerplay_progress(value):
+    if value in (None, ""):
+        return ""
+    try:
+        return f"{float(value) * 100:.2f}%"
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _build_system_results(systems, distances, metadata, show_distance):
     headers = list(SYSTEM_HEADERS)
     if show_distance:
@@ -188,6 +197,9 @@ def _build_system_results(systems, distances, metadata, show_distance):
             "System": system,
             "Population": _format_population(info.get("Population", "")),
             "Power State": str(info.get("Power State", "") or ""),
+            "Powerplay Progress": _format_powerplay_progress(
+                info.get("Powerplay Progress", "")
+            ),
         }
         if show_distance:
             row[DISTANCE_HEADER] = _format_result_distance(
