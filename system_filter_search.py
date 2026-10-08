@@ -19,6 +19,7 @@ FACTION_LOOKUP_URL = (
     "https://spansh.co.uk/api/systems/field_values/"
     "autocomplete_controlling_minor_faction"
 )
+SYSTEM_DETAIL_URL = "https://spansh.co.uk/api/system"
 
 
 def _format_distance(value):
@@ -133,6 +134,7 @@ def _query_spansh_systems(
 
     systems = []
     distances = {}
+    metadata = {}
     seen = set()
     page = 0
 
@@ -197,6 +199,10 @@ def _query_spansh_systems(
 
             seen.add(key)
             systems.append(system_name)
+            metadata[key] = {
+                "Population": item.get("population", ""),
+                "Power State": str(item.get("power_state", "") or "").strip(),
+            }
 
             if reference_system:
                 try:
@@ -210,7 +216,7 @@ def _query_spansh_systems(
         page += 1
         engine.cancellable_sleep(engine.DELAY, cancel_event)
 
-    return systems, distances
+    return systems, distances, metadata
 
 
 def search_systems_by_filters(
@@ -343,10 +349,11 @@ def search_systems_by_filters(
 
     all_systems = []
     all_distances = {}
+    all_metadata = {}
     seen = set()
 
     for filters, power_match_field, states_for_query in query_specs:
-        systems, distances = _query_spansh_systems(
+        systems, distances, metadata = _query_spansh_systems(
             filters,
             faction_name=faction_name,
             power_name=power_name,
@@ -363,6 +370,8 @@ def search_systems_by_filters(
                 all_systems.append(system_name)
             if key in distances:
                 all_distances[key] = distances[key]
+            if key in metadata:
+                all_metadata[key] = metadata[key]
 
     engine.check_cancel(cancel_event)
 
@@ -379,8 +388,52 @@ def search_systems_by_filters(
     print(f"Systems matching filters: {len(all_systems)}")
 
     if include_distances:
-        return all_systems, all_distances
+        return all_systems, all_distances, all_metadata
     return all_systems
+
+
+def fetch_system_metadata(system_name, *, cancel_event=None):
+    """Return Population and Power State for one exact system from Spansh."""
+    item = _lookup_system_record(system_name, cancel_event=cancel_event)
+    canonical = str(item.get("name") or system_name).strip()
+    id64 = item.get("id64")
+    if id64 in (None, ""):
+        raise ValueError(f'Spansh returned no id64 for "{canonical}".')
+    response = engine.request_with_retries(
+        "GET",
+        f"{SYSTEM_DETAIL_URL}/{id64}",
+        cancel_event=cancel_event,
+        headers={
+            "User-Agent": engine.USER_AGENT,
+            "Accept": "application/json",
+        },
+    )
+    data = response.json()
+    system = data.get("system") or data
+    return {
+        "Population": system.get("population", ""),
+        "Power State": str(system.get("power_state", "") or "").strip(),
+    }
+
+
+def enrich_system_metadata(systems, metadata=None, *, cancel_event=None):
+    """Fill missing system metadata without changing the system order."""
+    result = dict(metadata or {})
+    for system in systems or []:
+        engine.check_cancel(cancel_event)
+        key = engine.norm(system)
+        current = result.get(key) or {}
+        if "Population" in current and "Power State" in current:
+            continue
+        try:
+            result[key] = fetch_system_metadata(system, cancel_event=cancel_event)
+        except Exception as exc:
+            print(f"Could not fetch metadata for {system}: {exc}")
+            result[key] = {
+                "Population": current.get("Population", ""),
+                "Power State": current.get("Power State", ""),
+            }
+    return result
 
 
 def lookup_system_coordinates(system_name, *, cancel_event=None):
@@ -475,4 +528,5 @@ def filter_systems_within_distance(
 
     kept.sort(key=str.casefold)
     print(f"Database systems within distance: {len(kept)}")
-    return kept, distances
+    metadata = enrich_system_metadata(kept, cancel_event=cancel_event)
+    return kept, distances, metadata
