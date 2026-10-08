@@ -331,7 +331,7 @@ def _load_community_results(
     candidate_config["systems"] = database_systems
 
     if _has_system_filters(candidate_config):
-        systems, distances = _resolve_systems(
+        systems, distances, _metadata = _resolve_systems(
             candidate_config,
             cancel_event=cancel_event,
         )
@@ -342,9 +342,17 @@ def _load_community_results(
     return headers, rows, systems, distances
 
 
-def _empty_result(status, config, *, systems=None, system_distances=None):
+def _empty_result(
+    status,
+    config,
+    *,
+    systems=None,
+    system_distances=None,
+    system_metadata=None,
+):
     systems = list(systems or [])
     system_distances = dict(system_distances or {})
+    system_metadata = dict(system_metadata or {})
     system_headers, system_rows = _build_system_results(
         systems,
         system_distances,
@@ -410,6 +418,7 @@ def run_local_scan(config, cancel_event=None):
         system_headers, system_rows = _build_system_results(
             systems,
             system_distances,
+            system_metadata,
             bool(reference_system),
         )
         return {
@@ -450,7 +459,7 @@ def run_local_scan(config, cancel_event=None):
                 "Hotspots/Planets require manual systems or a System Filter."
             )
 
-        systems, system_distances = _resolve_systems(
+        systems, system_distances, system_metadata = _resolve_systems(
             config,
             cancel_event=cancel_event,
         )
