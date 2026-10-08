@@ -203,6 +203,7 @@ def _query_spansh_systems(
                 "Population": item.get("population", ""),
                 "Power State": str(item.get("power_state", "") or "").strip(),
                 "Powerplay Progress": item.get("power_state_control_progress", ""),
+                "Last Update": item.get("updated_at", ""),
             }
 
             if reference_system:
@@ -415,6 +416,7 @@ def fetch_system_metadata(system_name, *, cancel_event=None):
         "Population": system.get("population", ""),
         "Power State": str(system.get("power_state", "") or "").strip(),
         "Powerplay Progress": system.get("power_state_control_progress", ""),
+        "Last Update": system.get("updated_at", ""),
     }
 
 
@@ -429,6 +431,7 @@ def enrich_system_metadata(systems, metadata=None, *, cancel_event=None):
             "Population" in current
             and "Power State" in current
             and "Powerplay Progress" in current
+            and "Last Update" in current
         ):
             continue
         try:
@@ -439,6 +442,7 @@ def enrich_system_metadata(systems, metadata=None, *, cancel_event=None):
                 "Population": current.get("Population", ""),
                 "Power State": current.get("Power State", ""),
                 "Powerplay Progress": current.get("Powerplay Progress", ""),
+                "Last Update": current.get("Last Update", ""),
             }
     return result
 
