@@ -90,6 +90,20 @@ On the first successful synchronization, compatible bookmarks are sent normally 
 
 On later synchronizations, the clients still read the local RhinoSpotter bookmarks but compare them locally first. Only bookmarks whose fingerprint is new or different are sent to Community Deposits. Unchanged bookmarks therefore cause no Community Deposits POST and no per-report D1 matching work.
 
+### Community Deposits API credentials
+
+Both clients use the same `Authorization: Bearer <API key>` credential for GET and POST/batch requests. Configure one key with both `can_read=1` and `can_write=1` for a commander in Finder Settings or the EDMC plugin; the key must be provisioned externally. Finder and EDMC store and read it through the same commander-specific Windows Credential Manager target. The key is visible in the UI and is never written to EDMC preferences, Finder JSON settings, logs, sync state, or release artifacts. Finder settings persist only the selected commander name.
+
+The API permits reads across the shared deposit collection. The commander on every submitted bookmark must match the key's commander (case-insensitive after trimming). The Worker remains the authority and rejects a mismatch with HTTP 403.
+
+Batch responses are checked for `status: "ok"`, the exact `received` count, one result per submitted `report_id`, unique IDs, boolean `ok`, and a recognized success `action` (`inserted`, `matched_existing_deposit`, `updated_report`, or `unchanged`). An item with `ok: false` is left eligible for retry. Structurally incomplete or inconsistent responses do not mark records synchronized.
+
+Clients preserve the source field's three depletion states: an absent `depleted_at` stays omitted, explicit JSON `null` stays null, and a timestamp stays a timestamp. The API treats omission on update as “leave depletion unchanged” and explicit null as “clear depletion.” The client does not synthesize null for a missing field.
+
+Finder and EDMC serialize the complete bookmark state read, fingerprint comparison, HTTP upload and state save with the same named Windows mutex. If a process terminates while holding the mutex, Windows marks it abandoned and another client can acquire it and continue. A second sync can wait up to the mutex acquisition timeout before reporting that the shared sync is still in progress.
+
+Abandoning the mutex does not cancel an HTTP request that the client has already sent to the Worker. The Worker may continue processing that request after the client process has terminated. In this scenario, a client-side mutex cannot guarantee the ordering of remote writes: an earlier request may still be processed after another client has acquired the abandoned mutex and sent a later write. Guaranteeing remote write order requires support on the Worker, such as report versions or conditional writes.
+
 `rs_api.revision()` is recorded as useful metadata, but it is not trusted as the sole condition for skipping bookmark reads. The current RhinoSpotter 5.5.1 implementation derives that value from aggregate database values rather than a complete per-row content hash, so a bookmark edit can leave the revision unchanged. Stable-ID fingerprints are therefore the authoritative change detector.
 
 If writing the local sync-state file fails, the server synchronization result is not discarded; a later sync may simply resend records that could not be cached locally. Server-side stable report identity keeps that retry safe.

@@ -172,7 +172,7 @@ Once surface navigation data is available, the plugin combines the target coordi
 Download:
 
 ```text
-Hotspots-Finder-EDMC-Plugin-v1.0.2.zip
+Hotspots-Finder-EDMC-Plugin-v1.0.4.zip
 ```
 
 Extract it so this path exists:
@@ -187,7 +187,7 @@ RhinoSpotter 5.1+ is required only for **Sync Bookmarks**. Community Deposits sc
 
 ## Release packaging
 
-Finder and EDMC Plugin are published together in one GitHub Release and share the same public release version. The first public release containing the plugin is **v1.0.2**.
+Finder and EDMC Plugin are published together in one GitHub Release and share the same public release version. The first public release containing the plugin was **v1.0.2**; the current prepared release is **v1.0.4**.
 
 The plugin source lives in:
 
@@ -204,8 +204,8 @@ From the repository root, the release package can be generated with:
 The script reads the version from `load.py` and creates:
 
 ```text
-release\v1.0.2\Hotspots-Finder-EDMC-Plugin-v1.0.2.zip
-release\v1.0.2\SHA256.txt
+release\v1.0.4\Hotspots-Finder-EDMC-Plugin-v1.0.4.zip
+release\v1.0.4\SHA256.txt
 ```
 
-Finder and plugin assets are built into the same `release\v1.0.2` folder and share one `SHA256.txt`.
+Finder and plugin assets are built into the same `release\v1.0.4` folder and share one `SHA256.txt`.

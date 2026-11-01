@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import os
 import json
 import sys
@@ -9,7 +8,17 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from EDHF_Community_Navigator.community_api import chunks, send_deposit_batch
+from .api_credentials import credential_configured, get_api_key
+from .batch_protocol import validate_batch_request, validate_batch_response
+from .sync_state_lock import sync_state_mutex
+from .sync_plan import (
+    apply_credential_availability,
+    build_sync_plan,
+    load_source_module,
+    record_fingerprint,
+    record_state_key,
+)
+from .community_api import chunks, send_deposit_batch
 
 
 SUPPORTED_SCHEMA = 1
@@ -47,7 +56,8 @@ def _state_source_key(path: Path) -> str:
 
 def _load_sync_state() -> dict[str, Any]:
     try:
-        state = json.loads(SYNC_STATE_PATH.read_text(encoding="utf-8"))
+        with sync_state_mutex():
+            state = json.loads(SYNC_STATE_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {
             "version": SYNC_STATE_VERSION,
@@ -74,33 +84,32 @@ def _get_sync_state_entry(path: Path) -> dict[str, Any]:
 
 
 def _save_sync_state_entry(path: Path, entry: dict[str, Any]) -> None:
-    state = _load_sync_state()
-    state["sources"][_state_source_key(path)] = dict(entry)
+    with sync_state_mutex():
+        state = _load_sync_state_unlocked()
+        state["sources"][_state_source_key(path)] = dict(entry)
+        SYNC_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = SYNC_STATE_PATH.with_suffix(".json.tmp")
+        temp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(SYNC_STATE_PATH)
 
-    SYNC_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = SYNC_STATE_PATH.with_suffix(".json.tmp")
-    temp_path.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temp_path.replace(SYNC_STATE_PATH)
+
+def _load_sync_state_unlocked() -> dict[str, Any]:
+    try:
+        state = json.loads(SYNC_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": SYNC_STATE_VERSION, "sources": {}}
+    if (not isinstance(state, dict) or state.get("version") != SYNC_STATE_VERSION
+            or not isinstance(state.get("sources"), dict)):
+        return {"version": SYNC_STATE_VERSION, "sources": {}}
+    return state
 
 
 def _record_state_key(record: dict[str, Any]) -> str:
-    source_record_id = record.get("source_record_id")
-    if source_record_id not in (None, ""):
-        return f"id:{source_record_id}"
-    return f"report:{record.get('report_id', '')}"
+    return record_state_key(record)
 
 
 def _record_fingerprint(record: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        record,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return record_fingerprint(record)
 
 
 def _api_revision(module: ModuleType) -> Any:
@@ -135,14 +144,7 @@ def _load_rs_api(path: Path) -> ModuleType:
         sys.path.insert(0, plugin_path)
 
     try:
-        spec = importlib.util.spec_from_file_location(
-            "edhf_community_navigator_rs_api",
-            path,
-        )
-        if spec is None or spec.loader is None:
-            raise RhinoSpotterError(f"Could not load RhinoSpotter API: {path}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = load_source_module("edhf_community_navigator_rs_api", path)
     except RhinoSpotterError:
         raise
     except Exception as exc:
@@ -189,7 +191,7 @@ def _report_id(record: dict[str, Any]) -> str:
 
 
 def _api_record(mark: dict[str, Any]) -> dict[str, Any]:
-    return {
+    record = {
         "source_record_id": mark.get("id"),
         "commander": mark.get("commander"),
         "system": mark.get("system"),
@@ -204,8 +206,10 @@ def _api_record(mark: dict[str, Any]) -> dict[str, Any]:
         "density": mark.get("density"),
         "heading": mark.get("heading"),
         "marked_at": mark.get("marked_at"),
-        "depleted_at": mark.get("depleted_at"),
     }
+    if "depleted_at" in mark:
+        record["depleted_at"] = mark["depleted_at"]
+    return record
 
 
 def _body_key(record: dict[str, Any]) -> tuple[str, str] | None:
@@ -269,10 +273,15 @@ def _normalise_record(record: dict[str, Any]) -> dict[str, Any]:
         "density": _clean_text(record.get("density")),
         "heading": record.get("heading"),
         "marked_at": _clean_text(record.get("marked_at")),
-        "depleted_at": _clean_text(record.get("depleted_at")),
     }
 
-    return {key: value for key, value in payload.items() if value is not None}
+    if "depleted_at" in record:
+        payload["depleted_at"] = _clean_text(record.get("depleted_at"))
+
+    return {
+        key: value for key, value in payload.items()
+        if value is not None or key == "depleted_at" and key in payload
+    }
 
 
 def load_bookmarks(
@@ -336,37 +345,93 @@ def load_bookmarks(
     }
 
 
-def sync_bookmarks(plugin_dir: str | Path) -> dict[str, Any]:
+def sync_bookmarks(
+    plugin_dir: str | Path, *, commander: str | None = None
+) -> dict[str, Any]:
+    """Serialize read/decide/upload/save with the desktop client's sync."""
+    if not (commander or "").strip():
+        raise RhinoSpotterError("Active commander is required to synchronize bookmarks.")
+    with sync_state_mutex():
+        return _sync_bookmarks_under_mutex(plugin_dir, commander=commander)
+
+
+def _read_sync_inputs(
+    plugin_dir: str | Path, commander: str, *, check_credentials: bool = False
+):
     path = resolve_rs_api(plugin_dir)
     module = _load_rs_api(path)
     revision_before = _api_revision(module)
+    loaded = load_bookmarks(
+        plugin_dir, path=path, module=module, revision_before=revision_before
+    )
     state = _get_sync_state_entry(path)
+    previous = state.get("fingerprints", {})
+    if not isinstance(previous, dict):
+        previous = {}
+    plan = build_sync_plan(
+        records=loaded["records"], previous_fingerprints=previous,
+        loaded=loaded, source_type="rs_api", source_path=str(path),
+        state_entry=state, commander=commander,
+    )
+    if check_credentials:
+        plan = apply_credential_availability(plan, credential_configured)
+    # Preserve the plugin's existing all-or-nothing active-Commander check.
+    plan["confirm_blocked"] = bool(plan["commander_mismatches"])
+    return path, loaded, state, plan
+
+
+def preview_sync(plugin_dir: str | Path, *, commander: str) -> dict[str, Any]:
+    """Build a read-only preview under the shared sync mutex."""
+    if not (commander or "").strip():
+        raise RhinoSpotterError("Active commander is required to preview bookmarks.")
+    with sync_state_mutex():
+        return _read_sync_inputs(
+            plugin_dir, commander, check_credentials=True
+        )[-1]
+
+
+def confirm_sync(
+    plugin_dir: str | Path, *, commander: str, expected_snapshot: str
+) -> dict[str, Any]:
+    """Rebuild and validate the preview before invoking the existing uploader."""
+    if not (commander or "").strip():
+        raise RhinoSpotterError("Active commander is required to synchronize bookmarks.")
+    with sync_state_mutex():
+        path, loaded, state, plan = _read_sync_inputs(
+            plugin_dir, commander, check_credentials=True
+        )
+        if plan["snapshot"] != expected_snapshot:
+            return {"stale": True, "plan": plan}
+        if plan["commander_mismatches"]:
+            raise RhinoSpotterError(
+                "RhinoSpotter bookmark commander does not match the active commander."
+            )
+        return _execute_sync_plan(path, loaded, state, plan, commander)
+
+
+def _sync_bookmarks_under_mutex(
+    plugin_dir: str | Path, *, commander: str | None = None
+) -> dict[str, Any]:
+    """Implementation called while the shared state mutex is held."""
+    path, loaded, state, plan = _read_sync_inputs(plugin_dir, commander or "")
+    if plan["commander_mismatches"]:
+        raise RhinoSpotterError(
+            "RhinoSpotter bookmark commander does not match the active commander."
+        )
+    return _execute_sync_plan(path, loaded, state, plan, commander)
+
+
+def _execute_sync_plan(path, loaded, state, plan, commander):
+    expected_commander = (commander or "").strip().lower()
 
     # RhinoSpotter 5.5.1 revision() can miss edits to arbitrary rows because
     # its current aggregate revision is not a complete content hash. Always
     # read the local bookmarks and let stable-id fingerprints decide what
     # needs uploading. This still avoids all Community Deposits/D1 work when
     # nothing changed.
-    loaded = load_bookmarks(
-        plugin_dir,
-        path=path,
-        module=module,
-        revision_before=revision_before,
-    )
     records = loaded["records"]
-
-    previous_fingerprints = state.get("fingerprints", {})
-    if not isinstance(previous_fingerprints, dict):
-        previous_fingerprints = {}
-
-    current_fingerprints: dict[str, str] = {}
-    records_to_send: list[dict[str, Any]] = []
-    for record in records:
-        key = _record_state_key(record)
-        fingerprint = _record_fingerprint(record)
-        current_fingerprints[key] = fingerprint
-        if previous_fingerprints.get(key) != fingerprint:
-            records_to_send.append(record)
+    current_fingerprints = plan["current_fingerprints"]
+    records_to_send = [item["record"] for item in plan["pending"]]
 
     systems = sorted({
         str(record.get("system")).strip()
@@ -388,11 +453,8 @@ def sync_bookmarks(plugin_dir: str | Path) -> dict[str, Any]:
             and state.get("revision") == loaded.get("revision")
         ),
         "records_sent": len(records_to_send),
-        "local_unchanged": max(0, len(records) - len(records_to_send)),
-        "removed_local": len(
-            set(previous_fingerprints)
-            - set(current_fingerprints)
-        ),
+        "local_unchanged": plan["unchanged"],
+        "removed_local": plan["removed_local"],
         "systems": systems,
         "inserted": 0,
         "matched": 0,
@@ -406,49 +468,65 @@ def sync_bookmarks(plugin_dir: str | Path) -> dict[str, Any]:
     changed_systems: set[str] = set()
     successful_keys: set[str] = set()
 
-    for batch in chunks(records_to_send):
-        metadata_by_report = {
-            str(record.get("report_id")): (
-                str(record.get("system")).strip(),
-                _record_state_key(record),
-            )
-            for record in batch
-            if record.get("report_id")
-        }
+    by_commander: dict[str, list[dict[str, Any]]] = {}
+    for record in records_to_send:
+        commander = _clean_text(record.get("commander"))
+        if not commander:
+            summary["errors"] += 1
+            continue
+        by_commander.setdefault(commander.lower(), []).append(record)
 
-        result = send_deposit_batch(batch)
-        results = result.get("results", [])
-        if not isinstance(results, list):
+    for records in by_commander.values():
+        commander = _clean_text(records[0].get("commander")) or ""
+        if expected_commander and commander.lower() != expected_commander:
             raise RhinoSpotterError(
-                "Community Deposits server returned invalid batch results."
+                "Bookmark commander does not match the active API profile."
             )
+        api_key = get_api_key(commander)
+        if not api_key:
+            summary["errors"] += len(records)
+            continue
+        for batch in chunks(records):
+            try:
+                validate_batch_request(batch)
+            except ValueError as exc:
+                raise RhinoSpotterError(str(exc)) from exc
+            if any(
+                (_clean_text(record.get("commander")) or "").lower()
+                != commander.lower()
+                for record in batch
+            ):
+                raise RhinoSpotterError(
+                    "Bookmark commander does not match the configured API profile."
+                )
+            metadata_by_report = {
+                str(record["report_id"]): (
+                    str(record.get("system")).strip(), _record_state_key(record)
+                )
+                for record in batch
+            }
+            result = send_deposit_batch(batch, api_key=api_key)
+            try:
+                result_by_report = validate_batch_response(batch, result)
+            except ValueError as exc:
+                raise RhinoSpotterError(str(exc)) from exc
 
-        for item in results:
-            if not isinstance(item, dict) or not item.get("ok"):
-                summary["errors"] += 1
-                continue
-
-            action = item.get("action")
-            if action == "inserted":
-                summary["inserted"] += 1
-            elif action == "matched_existing_deposit":
-                summary["matched"] += 1
-            elif action == "updated_report":
-                summary["updated"] += 1
-            elif action == "unchanged":
-                summary["unchanged"] += 1
-
-            report_id = str(item.get("report_id") or "")
-            metadata_item = metadata_by_report.get(report_id)
-            if metadata_item is not None:
-                system, state_key = metadata_item
+            for report_id, item in result_by_report.items():
+                if not item["ok"]:
+                    summary["errors"] += 1
+                    continue
+                action = item["action"]
+                if action == "inserted":
+                    summary["inserted"] += 1
+                elif action == "matched_existing_deposit":
+                    summary["matched"] += 1
+                elif action == "updated_report":
+                    summary["updated"] += 1
+                else:
+                    summary["unchanged"] += 1
+                system, state_key = metadata_by_report[report_id]
                 successful_keys.add(state_key)
-
-                if action in {
-                    "inserted",
-                    "matched_existing_deposit",
-                    "updated_report",
-                } and system:
+                if action in {"inserted", "matched_existing_deposit", "updated_report"} and system:
                     changed_systems.add(system)
 
     summary["changed_systems"] = sorted(changed_systems, key=str.casefold)
@@ -457,27 +535,44 @@ def sync_bookmarks(plugin_dir: str | Path) -> dict[str, Any]:
         loaded.get("revision_stable")
     )
 
-    if summary["errors"] == 0:
-        saved_fingerprints = current_fingerprints
-    else:
-        saved_fingerprints = dict(previous_fingerprints)
-        for key in successful_keys:
-            if key in current_fingerprints:
-                saved_fingerprints[key] = current_fingerprints[key]
-
-    state_entry = {
-        "complete": complete,
-        "revision": loaded.get("revision") if complete else None,
-        "records_found": loaded["records_found"],
-        "records_valid": loaded["records_valid"],
-        "radius_inferred": loaded["radius_inferred"],
-        "radius_missing": loaded["radius_missing"],
-        "systems": systems,
-        "fingerprints": saved_fingerprints,
-    }
-
     try:
-        _save_sync_state_entry(path, state_entry)
+        with sync_state_mutex():
+            latest = _get_sync_state_entry(path)
+            latest_fingerprints = latest.get("fingerprints", {})
+            if not isinstance(latest_fingerprints, dict):
+                latest_fingerprints = {}
+            latest_depletion_states = latest.get("depletion_states", {})
+            if not isinstance(latest_depletion_states, dict):
+                latest_depletion_states = {}
+            if summary["errors"] == 0:
+                saved_fingerprints = current_fingerprints
+                saved_depletion_states = {
+                    key: value for key, value in latest_depletion_states.items()
+                    if key in current_fingerprints
+                }
+                saved_depletion_states.update(plan["current_depletion_states"])
+            else:
+                saved_fingerprints = dict(latest_fingerprints)
+                saved_depletion_states = dict(latest_depletion_states)
+                for key in successful_keys:
+                    if key in current_fingerprints:
+                        saved_fingerprints[key] = current_fingerprints[key]
+                        if key in plan["current_depletion_states"]:
+                            saved_depletion_states[key] = plan[
+                                "current_depletion_states"
+                            ][key]
+            state_entry = {
+                "complete": complete,
+                "revision": loaded.get("revision") if complete else None,
+                "records_found": loaded["records_found"],
+                "records_valid": loaded["records_valid"],
+                "radius_inferred": loaded["radius_inferred"],
+                "radius_missing": loaded["radius_missing"],
+                "systems": systems,
+                "fingerprints": saved_fingerprints,
+                "depletion_states": saved_depletion_states,
+            }
+            _save_sync_state_entry(path, state_entry)
     except OSError as exc:
         summary["state_error"] = str(exc)
     else:

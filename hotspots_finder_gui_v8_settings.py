@@ -11,7 +11,37 @@ from tkinter import filedialog, messagebox
 import app_settings
 import community_deposits
 import rhinospotter_sync_service
+import ui_scale_runtime
 from hotspots_finder_gui_v8 import APP_TITLE, COLORS
+
+
+def settings_window_metrics(
+    scale,
+    screen_height,
+    preferred_height=700,
+    screen_width=None,
+    preferred_width=600,
+):
+    """Return screen-fitted Settings geometry without a scrolling viewport."""
+    scale = ui_scale_runtime.normalise_scale(scale)
+    physical_width = int(round(preferred_width * scale))
+    if screen_width is not None:
+        physical_width = min(physical_width, max(240, int(screen_width) - 40))
+    physical_height = min(
+        int(round(preferred_height * scale)),
+        max(320, int(screen_height) - 40),
+    )
+    logical_width = max(1, int(round(physical_width / scale)))
+    logical_height = max(1, int(round(physical_height / scale)))
+    compact_layout = logical_height < 660
+    return {
+        "physical_width": physical_width,
+        "physical_height": physical_height,
+        "logical_width": logical_width,
+        "logical_height": logical_height,
+        "compact_layout": compact_layout,
+        "actions_y": logical_height - (29 if compact_layout else 43),
+    }
 
 
 class FinderV8SettingsMixin:
@@ -172,11 +202,71 @@ class FinderV8SettingsMixin:
         window.transient(self)
         window.grab_set()
 
-        width, height = 600, 540
+        width, height = 600, 700
         self.update_idletasks()
         x = self.winfo_rootx() + max(20, (self.winfo_width() - width) // 2)
         y = self.winfo_rooty() + max(20, (self.winfo_height() - height) // 2)
         window.geometry(f"{width}x{height}+{x}+{y}")
+
+        def layout_settings_content(logical_height):
+            logical_width = ui_scale_runtime.logical_px(window.winfo_width())
+            if logical_width <= 1:
+                logical_width = 600
+            compact_layout = logical_height < 660
+            if compact_layout:
+                startup_panel.place_configure(x=18, y=0, width=564, height=175)
+                rhino_panel.place_configure(x=18, y=179, width=564, height=202)
+                application_panel.place_configure(x=18, y=385, width=564, height=122)
+                source_label.place_configure(y=28)
+                path_entry.place_configure(y=25)
+                browse_button.place_configure(y=25)
+                auto_button.place_configure(y=25)
+                status_label.place_configure(y=55, height=20)
+                ask_sync_check.place_configure(y=78)
+                commander_label.place_configure(y=104)
+                api_commander_entry.place_configure(y=101)
+                api_key_label.place_configure(y=133)
+                api_key_entry.place_configure(y=130)
+                rhino_help_label.place_configure(y=159, height=38)
+            else:
+                startup_panel.place_configure(x=18, y=18, width=564, height=185)
+                rhino_panel.place_configure(x=18, y=209, width=564, height=270)
+                application_panel.place_configure(x=18, y=484, width=564, height=124)
+                source_label.place_configure(y=42)
+                path_entry.place_configure(y=38)
+                browse_button.place_configure(y=38)
+                auto_button.place_configure(y=38)
+                status_label.place_configure(y=77)
+                ask_sync_check.place_configure(y=109)
+                commander_label.place_configure(y=139)
+                api_commander_entry.place_configure(y=135)
+                api_key_label.place_configure(y=173)
+                api_key_entry.place_configure(y=169)
+                rhino_help_label.place_configure(y=207, height=45)
+
+            action_y = logical_height - (29 if compact_layout else 43)
+            if logical_width < 420:
+                reset_x, reset_width = 8, 110
+                cancel_x, cancel_width = logical_width - 158, 70
+                save_x, save_width = logical_width - 88, 80
+            else:
+                reset_x, reset_width = 18, 120
+                cancel_x, cancel_width = logical_width - 200, 80
+                save_x, save_width = logical_width - 110, 92
+            button_positions = {
+                "Reset Defaults": (reset_x, action_y, reset_width),
+                "Cancel": (cancel_x, action_y, cancel_width),
+                "Save": (save_x, action_y, save_width),
+            }
+            for child in window.winfo_children():
+                if isinstance(child, tk.Button):
+                    position = button_positions.get(str(child.cget("text")))
+                    if position is not None:
+                        child.place_configure(
+                            x=position[0], y=position[1], width=position[2]
+                        )
+
+        window._edhf_layout_settings_content = layout_settings_content
 
         startup = self.v8_settings.get("startup", {})
         rhino = self.v8_settings.get("rhinospotter", {})
@@ -208,6 +298,11 @@ class FinderV8SettingsMixin:
         ask_sync_var = tk.BooleanVar(
             window, value=bool(rhino.get("ask_before_sync", True))
         )
+        community_api = self.v8_settings.get("community_api", {})
+        api_commander_var = tk.StringVar(
+            window, value=str(community_api.get("commander", "") or "")
+        )
+        api_key_var = tk.StringVar(window)
         rhino_status_var = tk.StringVar(window)
 
         def panel(y, height, title):
@@ -290,15 +385,16 @@ class FinderV8SettingsMixin:
             font=("Segoe UI", 8),
         ).place(x=12, y=137, width=530, height=38)
 
-        rhino_panel = panel(214, 205, "RHINOSPOTTER / COMMUNITY DEPOSITS")
+        rhino_panel = panel(209, 270, "COMMUNITY DEPOSITS")
 
-        tk.Label(
+        source_label = tk.Label(
             rhino_panel,
             text="Source",
             bg=COLORS["panel"],
             fg=COLORS["muted"],
             font=("Segoe UI", 9),
-        ).place(x=12, y=42)
+        )
+        source_label.place(x=12, y=42)
 
         path_entry = tk.Entry(
             rhino_panel,
@@ -345,21 +441,36 @@ class FinderV8SettingsMixin:
         )
         status_label.place(x=12, y=77, width=532, height=24)
 
-        check(
+        ask_sync_check = check(
             rhino_panel,
             "Ask before exporting bookmarks to Community Deposits",
             ask_sync_var,
             12,
-            115,
+            109,
             width=360,
         )
 
-        tk.Label(
+        commander_label = tk.Label(rhino_panel, text="Commander", bg=COLORS["panel"], fg=COLORS["muted"],
+                                   font=("Segoe UI", 9))
+        commander_label.place(x=12, y=139)
+        api_commander_entry = tk.Entry(rhino_panel, textvariable=api_commander_var, bg="#3b3b3b",
+                 fg=COLORS["text"], insertbackground=COLORS["text"], relief="flat",
+                 font=("Segoe UI", 9))
+        api_commander_entry.place(x=92, y=135, width=180, height=25)
+        api_key_label = tk.Label(rhino_panel, text="API Key", bg=COLORS["panel"], fg=COLORS["muted"],
+                                 font=("Segoe UI", 9))
+        api_key_label.place(x=12, y=173)
+        api_key_entry = tk.Entry(rhino_panel, textvariable=api_key_var, bg="#3b3b3b",
+                                 fg=COLORS["text"], insertbackground=COLORS["text"], relief="flat",
+                                 font=("Segoe UI", 9))
+        api_key_entry.place(x=82, y=169, width=400, height=25)
+
+        rhino_help_label = tk.Label(
             rhino_panel,
             text=(
-                "Auto prefers RhinoSpotter 5.1+ rs_api from the EDMC plugin "
-                "folder. Older installs fall back to the local SQLite database "
-                "or legacy JSON cards."
+                "One key with can_read=1 and can_write=1 is stored in shared "
+                "Windows Credential Manager; blank keeps the saved key. "
+                "Auto prefers RhinoSpotter 5.1+ rs_api, with SQLite/JSON fallbacks."
             ),
             bg=COLORS["panel"],
             fg=COLORS["muted"],
@@ -367,7 +478,8 @@ class FinderV8SettingsMixin:
             anchor="w",
             wraplength=525,
             font=("Segoe UI", 8),
-        ).place(x=12, y=147, width=530, height=42)
+        )
+        rhino_help_label.place(x=12, y=207, width=530, height=45)
 
         def refresh_rhino_status(_event=None):
             text = str(rhino_path_var.get() or "").strip()
@@ -425,7 +537,7 @@ class FinderV8SettingsMixin:
         path_entry.bind("<FocusOut>", refresh_rhino_status, add="+")
         refresh_rhino_status()
 
-        application_panel = panel(430, 60, "APPLICATION")
+        application_panel = panel(484, 124, "APPLICATION")
         update_check = tk.Checkbutton(
             application_panel,
             text="Check for updates on startup",
@@ -448,6 +560,8 @@ class FinderV8SettingsMixin:
             remember_var.set(False)
             rhino_path_var.set(auto_rhino_path)
             ask_sync_var.set(True)
+            api_commander_var.set("")
+            api_key_var.set("")
             refresh_rhino_status()
 
         def restore_dialog_values():
@@ -471,6 +585,10 @@ class FinderV8SettingsMixin:
             )
             rhino_path_var.set(current_path)
             ask_sync_var.set(bool(current_rhino.get("ask_before_sync", True)))
+            api_commander_var.set(str(
+                self.v8_settings.get("community_api", {}).get("commander", "") or ""
+            ))
+            api_key_var.set("")
             refresh_rhino_status()
 
         window._edhf_restore_settings_values = restore_dialog_values
@@ -488,6 +606,7 @@ class FinderV8SettingsMixin:
                         callback()
                     except (AttributeError, tk.TclError):
                         pass
+            api_key_var.set("")
 
             hide = getattr(self, "_hide_persistent_settings_window", None)
             if callable(hide):
@@ -531,14 +650,21 @@ class FinderV8SettingsMixin:
                 "data_path": stored_rhino_path,
                 "ask_before_sync": bool(ask_sync_var.get()),
             }
+            commander = str(api_commander_var.get() or "").strip()
+            self.v8_settings["community_api"] = {"commander": commander}
             if remember_var.get():
                 self.v8_settings["last_filters"] = self._capture_current_filters()
 
             try:
+                from edmc_plugin.EDHF_Community_Navigator.api_credentials import store_api_key
+
+                if api_key_var.get():
+                    store_api_key(commander, api_key_var.get())
                 app_settings.save_settings(self.v8_settings)
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 messagebox.showerror(APP_TITLE, str(exc), parent=window)
                 return
+            api_key_var.set("")
 
             self._refresh_runtime_settings()
             self.status_var.set("Settings saved")
@@ -554,7 +680,7 @@ class FinderV8SettingsMixin:
             activeforeground=COLORS["text"],
             relief="flat",
             font=("Segoe UI", 9),
-        ).place(x=18, y=500, width=120, height=28)
+        ).place(x=18, y=657, width=120, height=28)
 
         tk.Button(
             window,
@@ -566,7 +692,7 @@ class FinderV8SettingsMixin:
             activeforeground=COLORS["text"],
             relief="flat",
             font=("Segoe UI", 9),
-        ).place(x=400, y=500, width=80, height=28)
+        ).place(x=400, y=657, width=80, height=28)
 
         tk.Button(
             window,
@@ -578,7 +704,9 @@ class FinderV8SettingsMixin:
             activeforeground="#111111",
             relief="flat",
             font=("Segoe UI", 9, "bold"),
-        ).place(x=490, y=500, width=92, height=28)
+        ).place(x=490, y=657, width=92, height=28)
+
+        layout_settings_content(height)
 
         window.protocol("WM_DELETE_WINDOW", close_dialog)
 
@@ -592,82 +720,37 @@ class FinderV8SettingsMixin:
             window.focus_force()
 
     def start_rhino_upload(self):
-        # Let the inherited method show its normal busy warning without also
-        # showing a confirmation dialog first.
-        if self.rhino_upload_running or self.running:
-            return super().start_rhino_upload()
+        return super().start_rhino_upload()
 
+    def _rhino_sync_preview(self):
         data_path = app_settings.resolve_rhinospotter_data_path(
             self.v8_settings
         )
-        try:
-            source_info = rhinospotter_sync_service.inspect_source(data_path)
-        except Exception as exc:
-            messagebox.showerror(
-                APP_TITLE,
-                (
-                    "RhinoSpotter data source was not found or could not be read.\n\n"
-                    f"{exc}\n\n"
-                    "Open Settings to select the RhinoSpotter data folder."
-                ),
-                parent=self,
-            )
-            return
+        return rhinospotter_sync_service.preview_sync(data_path=data_path)
 
-        if self.ask_before_rhino_sync:
-            source_type = source_info.get("source_type")
-            if source_type == "rs_api":
-                version = str(source_info.get("api_version") or "").strip()
-                source_label = (
-                    f"RhinoSpotter API {version}" if version else "RhinoSpotter API"
-                )
-            elif source_type == "sqlite":
-                source_label = "SQLite fallback"
-            else:
-                source_label = "Legacy JSON cards"
-
-            radius_inferred = int(source_info.get("radius_inferred", 0) or 0)
-            radius_missing = int(source_info.get("radius_missing", 0) or 0)
-            radius_note = ""
-            if source_type == "rs_api":
-                radius_note = (
-                    f"\nPlanet radii recovered from same body: {radius_inferred}"
-                    f"\nPlanet radii still unknown: {radius_missing}"
-                )
-
-            confirmed = messagebox.askyesno(
-                APP_TITLE,
-                (
-                    "Export these RhinoSpotter bookmarks to the shared "
-                    "Community Deposits database?\n\n"
-                    f"Source: {source_label}\n"
-                    f"{source_info.get('source_path', data_path)}\n\n"
-                    f"Bookmarks found: {source_info.get('records_found', 0)}"
-                    f"{radius_note}\n\n"
-                    "This sends bookmark coordinates and mining data to the "
-                    "shared Community Deposits database."
-                ),
-                parent=self,
-            )
-            if not confirmed:
-                return
-
-        return super().start_rhino_upload()
-
-    def _rhino_upload_worker(self, systems, refresh_after_upload):
+    def _rhino_upload_worker(self, systems, refresh_after_upload, expected_snapshot):
         try:
             data_path = app_settings.resolve_rhinospotter_data_path(
                 self.v8_settings
             )
-            summary = rhinospotter_sync_service.sync_bookmarks(
-                data_path=data_path
+            summary = rhinospotter_sync_service.confirm_sync(
+                data_path=data_path, expected_snapshot=expected_snapshot
             )
+            if summary.get("stale"):
+                self.after(
+                    0, self._rhino_preview_ready, summary["plan"],
+                    systems, refresh_after_upload,
+                )
+                return
 
             community_headers = []
             community_rows = []
             if refresh_after_upload:
                 community_headers, community_rows = (
-                    community_deposits.fetch_deposits_for_systems(systems)
+                    community_deposits.fetch_deposits_for_systems(
+                        systems,
+                        commander=self.v8_settings.get("community_api", {}).get("commander"),
+                    )
                 )
 
             self.after(

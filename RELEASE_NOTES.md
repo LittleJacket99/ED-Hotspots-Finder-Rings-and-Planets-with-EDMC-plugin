@@ -1,3 +1,26 @@
+# v1.0.4 — ED Hotspots Finder - Rings & Planets
+
+### Finder and EDMC
+
+- Adds Community Deposits integration for reading and submitting deposit reports.
+- Integrates RhinoSpotter bookmarks with incremental synchronization based on local fingerprints.
+- Adds a compact confirmation preview before synchronization, showing new, modified, and unchanged deposit counts.
+- Shares one Community Deposits API key between Finder and EDMC through Windows Credential Manager.
+- Improves synchronization dialog positioning, lifecycle handling, and EDMC theme consistency.
+- Preserves depletion state when comparing and synchronizing bookmark reports.
+
+Community Deposits access requires an authorized API key with both `can_read=1` and `can_write=1`. The key is configured by the user and is not included in these downloads.
+
+### Backend protections
+
+The deployed Community Deposits Worker and D1 schema preserve individual Commander reports alongside shared deposit aggregates. A database-level geographic duplicate guard protects against concurrent inserts for the same nearby deposit, and per-report handling prevents one Commander's report from improperly overwriting shared deposit data. These protections are implemented in the backend; the Finder and EDMC plugin do not provide these guarantees by themselves.
+
+### Installation
+
+- **Finder:** Download and run the Windows executable, then configure an authorized Community Deposits API key.
+- **EDMC plugin:** Extract the ZIP into EDMarketConnector's `plugins` folder, preserving the `EDHF_Community_Navigator` directory. Restart EDMC and configure the authorized API key.
+- Verify the downloaded files with `SHA256.txt`.
+
 # v1.0.2 — Community Deposits, RhinoSpotter API and EDMC Plugin
 
 This release expands the existing v1.0.2 maintenance update into the first unified **ED Hotspots Finder + Hotspots Finder EDMC Plugin** release.

@@ -34,7 +34,7 @@ from hotspots_finder_gui_v8_ui import FinderV8FinalUIApp as _BaseFinalApp
 
 
 PUBLIC_APP_TITLE = "ED Hotspots Finder - Rings & Planets"
-PUBLIC_APP_VERSION = "v1.0.2"
+PUBLIC_APP_VERSION = "v1.0.4"
 base_gui.APP_TITLE = PUBLIC_APP_TITLE
 community_gui.APP_TITLE = PUBLIC_APP_TITLE
 settings_gui.APP_TITLE = PUBLIC_APP_TITLE
@@ -276,6 +276,7 @@ class FinderV8FinalApp(_BaseFinalApp):
             tk._default_root = self
 
         self.title(PUBLIC_APP_TITLE)
+        self.resizable(False, False)
         self._apply_scaled_root_geometry()
         self._apply_app_icon(self)
 
@@ -1024,13 +1025,20 @@ class FinderV8FinalApp(_BaseFinalApp):
         except (AttributeError, tk.TclError):
             pass
 
-    def _center_settings_window(self, window, width=600, height=620):
+    def _center_settings_window(self, window, width=600, height=700):
         try:
             self.update_idletasks()
-            physical_width = ui_scale_runtime.px(width)
-            physical_height = ui_scale_runtime.px(height)
             screen_width = self.winfo_screenwidth()
             screen_height = self.winfo_screenheight()
+            metrics = settings_gui.settings_window_metrics(
+                ui_scale_runtime.current_scale(),
+                screen_height,
+                height,
+                screen_width,
+                width,
+            )
+            physical_width = metrics["physical_width"]
+            physical_height = metrics["physical_height"]
 
             x = self.winfo_rootx() + (self.winfo_width() - physical_width) // 2
             y = self.winfo_rooty() + (self.winfo_height() - physical_height) // 2
@@ -1040,6 +1048,10 @@ class FinderV8FinalApp(_BaseFinalApp):
             geometry = f"{physical_width}x{physical_height}+{x}+{y}"
             window.geometry(geometry)
             window.update_idletasks()
+            layout = getattr(window, "_edhf_layout_settings_content", None)
+            if callable(layout):
+                layout(metrics["logical_height"])
+                window.update_idletasks()
             window.geometry(geometry)
             return geometry
         except tk.TclError:
@@ -1074,7 +1086,7 @@ class FinderV8FinalApp(_BaseFinalApp):
             # Move the already-mapped transparent window into its final position,
             # settle geometry, then make it visible without a native map event.
             window.attributes("-alpha", 0.0)
-            self._center_settings_window(window, 600, 620)
+            self._center_settings_window(window, 600, 700)
             window.update_idletasks()
             window.attributes("-alpha", 1.0)
             try:
@@ -1149,7 +1161,15 @@ class FinderV8FinalApp(_BaseFinalApp):
 
         application_panel = None
         update_check = None
-        for child in window.winfo_children():
+        descendants = []
+
+        def collect_descendants(parent):
+            for child in parent.winfo_children():
+                descendants.append(child)
+                collect_descendants(child)
+
+        collect_descendants(window)
+        for child in descendants:
             if not isinstance(child, tk.Frame):
                 continue
             for sub in child.winfo_children():
@@ -1175,9 +1195,8 @@ class FinderV8FinalApp(_BaseFinalApp):
 
         try:
             width = 600
-            height = 620
+            height = 700
             self._center_settings_window(window, width, height)
-            application_panel.place_configure(height=132)
             if update_check is not None:
                 update_check.configure(
                     text="Check for updates on startup",
@@ -1185,12 +1204,6 @@ class FinderV8FinalApp(_BaseFinalApp):
                     state="normal",
                 )
                 update_check.place_configure(x=12, y=100, width=320, height=20)
-
-            for child in window.winfo_children():
-                if isinstance(child, tk.Button):
-                    text = str(child.cget("text") or "")
-                    if text in {"Reset Defaults", "Cancel", "Save"}:
-                        child.place_configure(y=580)
 
             self.after_idle(
                 lambda w=window: self._center_settings_window(w, width, height)
@@ -1342,9 +1355,9 @@ class FinderV8FinalApp(_BaseFinalApp):
         try:
             self._style_mockup_controls(window)
             self._style_classic_widget_tree(window)
-            self._center_settings_window(window, 600, 620)
+            self._center_settings_window(window, 600, 700)
             window.update_idletasks()
-            self._center_settings_window(window, 600, 620)
+            self._center_settings_window(window, 600, 700)
             window.update_idletasks()
 
             if getattr(self, "_prebuilding_settings_window", False):

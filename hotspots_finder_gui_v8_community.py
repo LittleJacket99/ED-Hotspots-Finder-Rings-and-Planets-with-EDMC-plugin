@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, ttk
 import community_deposits
 import results_export
 import rhinospotter_sync_service
+from edmc_plugin.EDHF_Community_Navigator.sync_preview_dialog import show_sync_preview
 from hotspots_finder_gui_v8 import APP_TITLE, COLORS, FinderV8App
 
 
@@ -396,20 +397,55 @@ class FinderV8CommunityApp(FinderV8App):
         self.rhino_upload_button.configure(state="disabled")
         self.scan_button.configure(state="disabled")
         self.progress.start(12)
-        self.status_var.set("Uploading RhinoSpotter deposits...")
+        self.status_var.set("Preparing RhinoSpotter sync preview...")
 
         systems = self._system_list()
         refresh_after_upload = self.community_deposits_enabled.get() and bool(systems)
 
         threading.Thread(
-            target=self._rhino_upload_worker,
+            target=self._rhino_preview_worker,
             args=(systems, refresh_after_upload),
             daemon=True,
         ).start()
 
-    def _rhino_upload_worker(self, systems, refresh_after_upload):
+    def _rhino_sync_preview(self):
+        return rhinospotter_sync_service.preview_sync()
+
+    def _rhino_preview_worker(self, systems, refresh_after_upload):
         try:
-            summary = rhinospotter_sync_service.sync_bookmarks()
+            plan = self._rhino_sync_preview()
+            self.after(0, self._rhino_preview_ready, plan, systems, refresh_after_upload)
+        except Exception as exc:
+            self.after(0, self._rhino_upload_failed, str(exc))
+
+    def _rhino_preview_ready(self, plan, systems, refresh_after_upload):
+        theme_name = str(
+            (getattr(self, "v8_settings", {}).get("application", {}) or {}).get(
+                "theme", "deep_black"
+            )
+        )
+        palette = visual_theme.THEMES.get(theme_name, visual_theme.THEMES["deep_black"])
+        confirmed = show_sync_preview(self, plan, palette=palette)
+        if not confirmed:
+            self._finish_rhino_upload("RhinoSpotter sync cancelled")
+            return
+        threading.Thread(
+            target=self._rhino_upload_worker,
+            args=(systems, refresh_after_upload, plan["snapshot"]),
+            daemon=True,
+        ).start()
+
+    def _rhino_upload_worker(self, systems, refresh_after_upload, expected_snapshot):
+        try:
+            summary = rhinospotter_sync_service.confirm_sync(
+                None, expected_snapshot
+            )
+            if summary.get("stale"):
+                self.after(
+                    0, self._rhino_preview_ready, summary["plan"],
+                    systems, refresh_after_upload,
+                )
+                return
 
             community_headers = []
             community_rows = []
@@ -419,7 +455,10 @@ class FinderV8CommunityApp(FinderV8App):
             )
             if refresh_after_upload and remote_changed:
                 community_headers, community_rows = (
-                    community_deposits.fetch_deposits_for_systems(systems)
+                    community_deposits.fetch_deposits_for_systems(
+                        systems,
+                        commander=self.v8_settings.get("community_api", {}).get("commander"),
+                    )
                 )
 
             self.after(
@@ -440,8 +479,11 @@ class FinderV8CommunityApp(FinderV8App):
             )
 
         records_sent = int(summary.get("records_sent", 0) or 0)
+        errors = int(summary.get("errors", 0) or 0)
 
-        if records_sent == 0:
+        if records_sent == 0 and errors:
+            self._finish_rhino_upload("RhinoSpotter upload incomplete")
+        elif records_sent == 0:
             self._finish_rhino_upload(
                 "No new or modified RhinoSpotter bookmarks"
             )
@@ -458,7 +500,12 @@ class FinderV8CommunityApp(FinderV8App):
             source_label = "SQLite database"
         else:
             source_label = "Legacy JSON cards"
-        if records_sent == 0:
+        if records_sent == 0 and errors:
+            detail = (
+                "No bookmarks were uploaded because one or more records could "
+                "not be synchronized. Review the errors and configured API key."
+            )
+        elif records_sent == 0:
             detail = (
                 "No new or modified bookmarks required an upload.\n"
                 "Nothing was sent to Community Deposits."
@@ -483,7 +530,7 @@ class FinderV8CommunityApp(FinderV8App):
                 f"Locally unchanged/skipped: "
                 f"{summary.get('local_unchanged', 0)}\n\n"
                 f"{detail}\n"
-                f"Errors: {summary.get('errors', 0)}"
+                f"Errors: {errors}"
             ),
             parent=self,
         )
@@ -498,6 +545,11 @@ class FinderV8CommunityApp(FinderV8App):
         self.rhino_upload_button.configure(state="normal")
         self.scan_button.configure(state="normal")
         self.status_var.set(status)
+
+
+# Import after the community base class exists: the visual inheritance chain
+# imports the column-filter layer, which derives from FinderV8CommunityApp.
+import hotspots_finder_gui_v8_visual as visual_theme
 
 
 def main():

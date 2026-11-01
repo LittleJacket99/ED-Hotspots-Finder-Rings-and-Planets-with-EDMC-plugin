@@ -1,6 +1,5 @@
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 import sqlite3
@@ -10,13 +9,21 @@ import urllib.request
 from contextlib import closing
 from pathlib import Path
 
+from edmc_plugin.EDHF_Community_Navigator.api_credentials import get_api_key
+from edmc_plugin.EDHF_Community_Navigator.sync_state_lock import sync_state_mutex
+from edmc_plugin.EDHF_Community_Navigator.sync_plan import (
+    load_source_module,
+    record_fingerprint as _shared_record_fingerprint,
+    record_state_key as _shared_record_state_key,
+)
+
 
 API_URL = (
     "https://ed-alliance-community-deposits."
     "littlejacket99.workers.dev/v1/deposits/batch"
 )
 
-USER_AGENT = "ED-Hotspots-Finder-Rings-and-Planets/1.0.2"
+USER_AGENT = "ED-Hotspots-Finder-Rings-and-Planets/1.0.4"
 
 MAX_BATCH_SIZE = 200
 
@@ -122,14 +129,18 @@ def normalize_record(record):
         "heading": record.get("heading"),
         "marked_at": clean_text(record.get("marked_at")),
         "updated_at": clean_text(record.get("updated_at")),
-        "depleted_at": clean_text(record.get("depleted_at")),
     }
+
+    # Keep absent distinct from explicit null: the API treats null as a
+    # request to reactivate a previously depleted deposit.
+    if "depleted_at" in record:
+        payload["depleted_at"] = clean_text(record.get("depleted_at"))
 
     # Do not send optional null fields.
     return {
         key: value
         for key, value in payload.items()
-        if value is not None
+        if value is not None or key == "depleted_at" and key in payload
     }
 
 
@@ -177,7 +188,8 @@ def load_sync_state():
     """Load the local sync cache. Corrupt/missing cache files are ignored."""
 
     try:
-        state = json.loads(SYNC_STATE_PATH.read_text(encoding="utf-8"))
+        with sync_state_mutex():
+            state = json.loads(SYNC_STATE_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {
             "version": SYNC_STATE_VERSION,
@@ -209,35 +221,38 @@ def get_sync_state_entry(source_type, source_path):
 def save_sync_state_entry(source_type, source_path, entry):
     """Atomically persist one source entry without exposing bookmark data."""
 
-    state = load_sync_state()
-    state["sources"][
-        sync_state_source_key(source_type, source_path)
-    ] = dict(entry)
+    with sync_state_mutex():
+        state = _load_sync_state_unlocked()
+        state["sources"][
+            sync_state_source_key(source_type, source_path)
+        ] = dict(entry)
+        _write_sync_state_unlocked(state)
 
+
+def _load_sync_state_unlocked():
+    try:
+        state = json.loads(SYNC_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": SYNC_STATE_VERSION, "sources": {}}
+    if (not isinstance(state, dict) or state.get("version") != SYNC_STATE_VERSION
+            or not isinstance(state.get("sources"), dict)):
+        return {"version": SYNC_STATE_VERSION, "sources": {}}
+    return state
+
+
+def _write_sync_state_unlocked(state):
     SYNC_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     temp_path = SYNC_STATE_PATH.with_suffix(".json.tmp")
-    temp_path.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    temp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     temp_path.replace(SYNC_STATE_PATH)
 
 
 def record_state_key(record):
-    source_record_id = record.get("source_record_id")
-    if source_record_id not in (None, ""):
-        return f"id:{source_record_id}"
-    return f"report:{record.get('report_id', '')}"
+    return _shared_record_state_key(record)
 
 
 def record_fingerprint(record):
-    canonical = json.dumps(
-        record,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return _shared_record_fingerprint(record)
 
 
 def _is_default_data_path(path):
@@ -285,14 +300,7 @@ def _load_rs_api_module(api_path):
         sys.path.insert(0, plugin_dir)
 
     try:
-        spec = importlib.util.spec_from_file_location(
-            "edhf_rhinospotter_rs_api",
-            api_path,
-        )
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Could not load RhinoSpotter API: {api_path}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = load_source_module("edhf_rhinospotter_rs_api", api_path)
     except Exception as exc:
         raise RuntimeError(
             f"Could not import RhinoSpotter API {api_path}: {exc}"
@@ -341,7 +349,7 @@ def _api_record(mark):
     if not isinstance(mark, dict):
         return mark
 
-    return {
+    record = {
         "source_record_id": mark.get("id"),
         "commander": mark.get("commander"),
         "system": mark.get("system"),
@@ -356,8 +364,10 @@ def _api_record(mark):
         "density": mark.get("density"),
         "heading": mark.get("heading"),
         "marked_at": mark.get("marked_at"),
-        "depleted_at": mark.get("depleted_at"),
     }
+    if "depleted_at" in mark:
+        record["depleted_at"] = mark["depleted_at"]
+    return record
 
 
 def _body_key(record):
@@ -671,7 +681,16 @@ def load_rhinospotter_records(source=None):
         "deposits": deposits,
     }
 
-def send_batch(deposits):
+def send_batch(deposits, api_key=None):
+    if not api_key:
+        commanders = {clean_text(item.get("commander")) for item in deposits}
+        commanders.discard(None)
+        if len(commanders) != 1:
+            raise RuntimeError("An API key is required for the bookmark commander.")
+        commander = next(iter(commanders))
+        api_key = get_api_key(commander)
+    if not api_key:
+        raise RuntimeError("No API key is configured for the bookmark commander.")
     payload = {
         "deposits": deposits
     }
@@ -687,6 +706,7 @@ def send_batch(deposits):
         headers={
             "Content-Type": "application/json",
             "User-Agent": USER_AGENT,
+            "Authorization": f"Bearer {api_key}",
         },
         method="POST",
     )
@@ -701,14 +721,13 @@ def send_batch(deposits):
             )
 
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode(
-            "utf-8",
-            errors="replace"
-        )
-
         raise RuntimeError(
-            f"HTTP {exc.code}: {body}"
-        ) from exc
+            f"Community Deposits API returned HTTP {exc.code}."
+        ) from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise RuntimeError(
+            "Community Deposits batch upload failed due to a network error."
+        ) from None
 
 
 def chunks(items, size):

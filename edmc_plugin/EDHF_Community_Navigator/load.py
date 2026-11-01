@@ -7,23 +7,26 @@ import subprocess
 import threading
 import tkinter as tk
 import webbrowser
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 from config import appname, config
 from theme import theme
 
 from EDHF_Community_Navigator.community_api import fetch_system_deposits
+from EDHF_Community_Navigator.api_credentials import store_api_key
 from EDHF_Community_Navigator.navigator import NavigatorOverlay
-from EDHF_Community_Navigator.results_window import DepositsWindow
+from EDHF_Community_Navigator.results_window import DepositsWindow, theme_colours
 from EDHF_Community_Navigator.update_checker import check_for_update
 from EDHF_Community_Navigator.rhinospotter_client import (
     RhinoSpotterNotInstalled,
-    sync_bookmarks,
+    confirm_sync,
+    preview_sync,
 )
+from EDHF_Community_Navigator.sync_preview_dialog import show_sync_preview
 
 
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 PLUGIN_NAME = "Hotspots Finder Deposits Companion"
 WORKER_EVENT = "<<EDHFCommunityNavigatorWorker>>"
 NAV_X_KEY = "edhf_community_navigator_x"
@@ -41,9 +44,11 @@ _scan_button: tk.Label | None = None
 _open_button: tk.Label | None = None
 _navigator: NavigatorOverlay | None = None
 _results_window: DepositsWindow | None = None
+_credentials_window: tk.Toplevel | None = None
 
 _current_system: str | None = None
 _current_body: str | None = None
+_current_commander: str | None = None
 _last_dashboard_status: dict[str, Any] | None = None
 
 _cached_system: str | None = None
@@ -120,7 +125,12 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
         text="Ready",
         anchor="w",
     )
-    _status.grid(row=2, column=0, columnspan=3, sticky=tk.EW, pady=(3, 0))
+    _status.grid(row=3, column=0, columnspan=3, sticky=tk.EW, pady=(3, 0))
+
+    credentials_button = _make_action_button(
+        frame, text="Configure Community API Keys", command=_open_credentials_dialog
+    )
+    credentials_button.grid(row=2, column=0, columnspan=3, sticky=tk.EW, pady=(3, 0))
 
     frame.columnconfigure(0, weight=1)
     frame.columnconfigure(1, weight=1)
@@ -261,8 +271,11 @@ def journal_entry(
     entry: dict[str, Any],
     state: dict[str, Any],
 ) -> str | None:
-    del cmdr, is_beta, station, state
-    global _current_body
+    del is_beta, station, state
+    global _current_body, _current_commander
+
+    if cmdr:
+        _current_commander = str(cmdr).strip()
 
     event = entry.get("event")
 
@@ -293,8 +306,11 @@ def dashboard_entry(
     is_beta: bool,
     entry: dict[str, Any],
 ) -> None:
-    del cmdr, is_beta
-    global _current_body, _last_dashboard_status
+    del is_beta
+    global _current_body, _current_commander, _last_dashboard_status
+
+    if cmdr:
+        _current_commander = str(cmdr).strip()
 
     _last_dashboard_status = dict(entry)
 
@@ -421,19 +437,148 @@ def _start_sync() -> None:
     if not _plugin_dir:
         _set_busy(False, "Plugin path unavailable")
         return
+    if not _current_commander:
+        _set_busy(False, "Commander not available yet")
+        return
 
-    _set_busy(True, "Syncing RhinoSpotter bookmarks…")
+    _set_busy(True, "Preparing RhinoSpotter sync preview…")
+    commander = _current_commander
     threading.Thread(
-        target=_sync_worker,
+        target=_sync_preview_worker,
+        args=(commander,),
         name="EDHF-RhinoSpotter-Sync",
         daemon=True,
     ).start()
+
+
+def _open_credentials_dialog() -> None:
+    global _credentials_window
+
+    commander = (_current_commander or "").strip()
+    if not commander:
+        messagebox.showerror(PLUGIN_NAME, "Commander is not available yet.", parent=_frame)
+        return
+
+    parent = _frame.winfo_toplevel()
+    existing = _credentials_window
+    if existing is not None:
+        try:
+            if existing.winfo_exists():
+                _center_credentials_window(existing, parent)
+                existing.deiconify()
+                existing.lift()
+                existing.grab_set()
+                existing.focus_force()
+                return
+        except tk.TclError:
+            pass
+
+    window = tk.Toplevel(_frame)
+    _credentials_window = window
+    window.withdraw()
+    window.title("Community Deposits API Key")
+    window.resizable(False, False)
+    window.transient(parent)
+    tk.Label(window, text=f"Commander: {commander}", anchor="w").grid(
+        row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(12, 6)
+    )
+    tk.Label(window, text="API Key").grid(row=1, column=0, sticky="w", padx=12, pady=4)
+    api_key_entry = tk.Entry(window, width=42)
+    api_key_entry.grid(row=1, column=1, padx=12, pady=4)
+    tk.Label(
+        window,
+        text=("Use a key with can_read=1 and can_write=1. Leave blank to keep "
+              "the saved key. It is stored in shared Windows Credential Manager."),
+        wraplength=390,
+        justify="left",
+    ).grid(row=3, column=0, columnspan=2, sticky="w", padx=12, pady=6)
+
+    def save_key() -> None:
+        try:
+            if api_key_entry.get():
+                store_api_key(commander, api_key_entry.get())
+        except (OSError, ValueError) as exc:
+            messagebox.showerror(PLUGIN_NAME, str(exc), parent=window)
+            return
+        api_key_entry.delete(0, tk.END)
+        window.destroy()
+
+    tk.Button(window, text="Save API Key", command=save_key).grid(
+        row=4, column=1, sticky="e", padx=12, pady=(4, 12)
+    )
+
+    _center_credentials_window(window, parent)
+    window.deiconify()
+    window.update_idletasks()
+    _center_credentials_window(window, parent)
+    window.grab_set()
+    window.lift()
+    window.focus_force()
+
+
+def _center_credentials_window(window: tk.Toplevel, parent: tk.Misc) -> None:
+    """Center the credential dialog on EDMC, with a screen-centred fallback."""
+    try:
+        parent.update_idletasks()
+        window.update_idletasks()
+        width = max(window.winfo_reqwidth(), window.winfo_width())
+        height = max(window.winfo_reqheight(), window.winfo_height())
+        screen_width = parent.winfo_screenwidth()
+        screen_height = parent.winfo_screenheight()
+
+        center_x = screen_width // 2
+        center_y = screen_height // 2
+        try:
+            if (
+                parent.winfo_exists()
+                and parent.winfo_ismapped()
+                and parent.state() == "normal"
+                and parent.winfo_width() > 1
+                and parent.winfo_height() > 1
+            ):
+                center_x = parent.winfo_rootx() + parent.winfo_width() // 2
+                center_y = parent.winfo_rooty() + parent.winfo_height() // 2
+        except tk.TclError:
+            pass
+
+        # Reserve room for native title-bar/border decorations when clamping.
+        margin_x = 24
+        margin_y = 40
+
+        def clamp(position: int, extent: int, size: int, margin: int) -> int:
+            if size + margin * 2 > extent:
+                return min(max(0, position), max(0, extent - size))
+            return min(max(margin, position), extent - size - margin)
+
+        x = clamp(center_x - width // 2, screen_width, width, margin_x)
+        y = clamp(center_y - height // 2, screen_height, height, margin_y)
+        window.geometry(f"{width}x{height}+{x}+{y}")
+        window.update_idletasks()
+
+        if window.state() != "withdrawn":
+            # Tk reports the client origin after the WM applies decorations.
+            # Correct any offset and clamp again to keep the visible window in
+            # bounds. The first pass runs while withdrawn to avoid a top-left flash.
+            actual_width = max(width, window.winfo_width())
+            actual_height = max(height, window.winfo_height())
+            x += center_x - (window.winfo_rootx() + actual_width // 2)
+            y += center_y - (window.winfo_rooty() + actual_height // 2)
+            x = clamp(x, screen_width, actual_width, margin_x)
+            y = clamp(y, screen_height, actual_height, margin_y)
+            window.geometry(f"+{x}+{y}")
+            window.update_idletasks()
+    except tk.TclError:
+        # Keep the dialog usable if the WM cannot provide geometry information.
+        pass
 
 
 def _start_scan() -> None:
     system = (_current_system or "").strip()
     if not system:
         _set_busy(False, "Current system not available yet")
+        return
+    if not _current_commander:
+        _set_busy(False, "Commander not available yet")
         return
 
     cache_matches = (
@@ -457,27 +602,43 @@ def _start_scan() -> None:
     _set_busy(True, f"{action} {system}…")
     threading.Thread(
         target=_scan_worker,
-        args=(system,),
+        args=(system, _current_commander),
         name="EDHF-Community-Scan",
         daemon=True,
     ).start()
 
-def _sync_worker() -> None:
+def _sync_preview_worker(commander: str) -> None:
     try:
-        summary = sync_bookmarks(_plugin_dir)
+        plan = preview_sync(_plugin_dir, commander=commander)
     except RhinoSpotterNotInstalled as exc:
         logger.warning("%s", exc)
         _post_worker_result("sync_rhino_missing", str(exc))
     except Exception as exc:
+        logger.exception("RhinoSpotter preview failed")
+        _post_worker_result("sync_error", str(exc))
+    else:
+        _post_worker_result("sync_preview", (commander, plan))
+
+
+def _sync_worker(commander: str, expected_snapshot: str) -> None:
+    try:
+        summary = confirm_sync(
+            _plugin_dir, commander=commander,
+            expected_snapshot=expected_snapshot,
+        )
+    except Exception as exc:
         logger.exception("RhinoSpotter synchronization failed")
         _post_worker_result("sync_error", str(exc))
     else:
-        _post_worker_result("sync_ok", summary)
+        if summary.get("stale"):
+            _post_worker_result("sync_stale", (commander, summary["plan"]))
+        else:
+            _post_worker_result("sync_ok", summary)
 
 
-def _scan_worker(system: str) -> None:
+def _scan_worker(system: str, commander: str) -> None:
     try:
-        records = fetch_system_deposits(system)
+        records = fetch_system_deposits(system, commander=commander)
     except Exception as exc:
         logger.exception("Community Deposits scan failed")
         _post_worker_result("scan_error", (system, str(exc)))
@@ -506,6 +667,8 @@ def _handle_worker_event(_event: tk.Event | None = None) -> None:
 
         if kind == "sync_ok":
             _handle_sync_ok(payload)
+        elif kind in {"sync_preview", "sync_stale"}:
+            _handle_sync_preview(payload)
         elif kind == "sync_rhino_missing":
             _set_busy(False, payload)
         elif kind == "sync_error":
@@ -518,6 +681,62 @@ def _handle_worker_event(_event: tk.Event | None = None) -> None:
             _set_busy(False, f"{system}: scan failed — {message}")
         elif kind == "update_check":
             _handle_update_check(payload)
+
+
+def _handle_sync_preview(payload) -> None:
+    commander, plan = payload
+    active_commander = (_current_commander or "").strip()
+    if not active_commander:
+        _set_busy(False, "Commander not available; sync cancelled")
+        return
+    if active_commander.casefold() != commander.casefold():
+        threading.Thread(
+            target=_sync_preview_worker,
+            args=(active_commander,),
+            name="EDHF-RhinoSpotter-Preview",
+            daemon=True,
+        ).start()
+        return
+    parent = _frame.winfo_toplevel() if _frame is not None else None
+    if parent is None:
+        _set_busy(False, "Sync cancelled")
+        return
+    try:
+        confirmed = show_sync_preview(
+            parent,
+            plan,
+            palette=theme_colours(),
+            apply_theme=theme.update,
+            button_factory=ttk.Button,
+            position_window=lambda window: _center_credentials_window(window, parent),
+        )
+    except Exception:
+        # A failed preview must not leave EDMC's actions disabled. The shared
+        # dialog owns grab cleanup; this restores the plugin's busy state.
+        logger.exception("Could not open RhinoSpotter sync confirmation")
+        _set_busy(False, "Sync preview unavailable")
+        return
+    if not confirmed:
+        _set_busy(False, "Sync cancelled")
+        return
+    active_commander = (_current_commander or "").strip()
+    if not active_commander:
+        _set_busy(False, "Commander not available; sync cancelled")
+        return
+    if active_commander.casefold() != commander.casefold():
+        threading.Thread(
+            target=_sync_preview_worker,
+            args=(active_commander,),
+            name="EDHF-RhinoSpotter-Preview",
+            daemon=True,
+        ).start()
+        return
+    threading.Thread(
+        target=_sync_worker,
+        args=(commander, plan["snapshot"]),
+        name="EDHF-RhinoSpotter-Sync",
+        daemon=True,
+    ).start()
 
 
 def _handle_sync_ok(summary: dict[str, Any]) -> None:

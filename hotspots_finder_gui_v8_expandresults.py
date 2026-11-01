@@ -9,8 +9,8 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
-from hotspots_finder_gui_v8_columnfilters import FinderV8ColumnFiltersApp
 from hotspots_finder_gui_v8 import COLORS
+from hotspots_finder_gui_v8_columnfilters import FinderV8ColumnFiltersApp
 
 
 DISTANCE_COLUMN = "Distance (LY)"

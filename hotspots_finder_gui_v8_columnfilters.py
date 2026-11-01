@@ -7,33 +7,11 @@ import tkinter.font as tkfont
 
 from hotspots_finder_gui_v8_community import FinderV8CommunityApp
 
-
 FILTER_COLUMNS = {
-    "community": (
-        "System",
-        "Body",
-        "Commodity",
-        "Rigs",
-        "Amount",
-        "Density",
-    ),
-    "planets": (
-        "System",
-        "Status",
-        "Planet Type",
-        "Landable",
-        "Volcanism",
-    ),
-    "hotspots": (
-        "System",
-        "Status",
-        "Body",
-        "Ring Type",
-        "Reserve Level",
-        "Commodity",
-    ),
+    "community": ("System", "Body", "Commodity", "Rigs", "Amount", "Density"),
+    "planets": ("System", "Status", "Planet Type", "Landable", "Volcanism"),
+    "hotspots": ("System", "Status", "Body", "Ring Type", "Reserve Level", "Commodity"),
 }
-
 
 class FinderV8ColumnFiltersApp(FinderV8CommunityApp):
     def _build_ui(self):

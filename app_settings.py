@@ -30,6 +30,9 @@ DEFAULT_SETTINGS = {
         "data_path": "",
         "ask_before_sync": True,
     },
+    "community_api": {
+        "commander": "",
+    },
     "application": {
         "theme": "deep_black",
         "ui_scale": 1.15,

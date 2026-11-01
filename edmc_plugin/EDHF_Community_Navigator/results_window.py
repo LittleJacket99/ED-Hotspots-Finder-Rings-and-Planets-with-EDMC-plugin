@@ -53,7 +53,7 @@ def _format_depleted_at(value: Any) -> str:
     return text
 
 
-def _theme_colours() -> dict[str, str]:
+def theme_colours() -> dict[str, str]:
     current = getattr(theme, "current", {}) or {}
 
     background = current.get("background") or "#101410"
@@ -73,7 +73,12 @@ def _theme_colours() -> dict[str, str]:
         "selected_fg": active_foreground,
         "border": disabled,
         "highlight": highlight,
+        "font_family": "Segoe UI",
     }
+
+
+# Keep the old private name available for any companion-local imports.
+_theme_colours = theme_colours
 
 
 class DepositsWindow:
@@ -89,7 +94,7 @@ class DepositsWindow:
         self.on_track = on_track
         self.selected_index: int | None = 0 if records else None
         self.row_widgets: dict[int, list[tk.Label]] = {}
-        self.colours = _theme_colours()
+        self.colours = theme_colours()
 
         self.window = tk.Toplevel(master)
         self.window.title(f"Community Deposits — {system}")

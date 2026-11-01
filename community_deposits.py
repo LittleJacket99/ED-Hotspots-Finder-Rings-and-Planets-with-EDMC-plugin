@@ -5,11 +5,13 @@
 import json
 
 import requests
+import app_settings
+from edmc_plugin.EDHF_Community_Navigator.api_credentials import get_api_key
 
 
 API_BASE = "https://ed-alliance-community-deposits.littlejacket99.workers.dev"
 DEPOSITS_URL = f"{API_BASE}/v1/deposits"
-USER_AGENT = "ED-Hotspots-Finder-Rings-and-Planets/1.0.2"
+USER_AGENT = "ED-Hotspots-Finder-Rings-and-Planets/1.0.4"
 REQUEST_TIMEOUT = 20
 
 COMMUNITY_HEADERS = [
@@ -37,6 +39,19 @@ def _check_cancel(cancel_event):
         from finder_engine import ScanCancelled
 
         raise ScanCancelled("Scan cancelled by user.")
+
+
+def _read_api_key(commander=None):
+    profile = commander
+    if not profile:
+        settings = app_settings.load_settings()
+        profile = settings.get("community_api", {}).get("commander", "")
+    key = get_api_key(profile) if profile else None
+    if not key:
+        raise CommunityDepositsError(
+            "Configure a Community Deposits API key for the commander in Settings."
+        )
+    return key
 
 
 def _cell_value(value):
@@ -123,12 +138,9 @@ def _normalise_rows(raw_rows, requested_system=None):
 
 def _validate_payload(response, *, context):
     if response.status_code != 200:
-        text = response.text.strip()
-        if len(text) > 300:
-            text = text[:300] + "..."
         raise CommunityDepositsError(
             f"Community Deposits API returned HTTP {response.status_code} "
-            f"for {context}: {text or 'no response body'}"
+            f"for {context}."
         )
 
     try:
@@ -144,10 +156,9 @@ def _validate_payload(response, *, context):
         )
 
     if payload.get("status") not in (None, "ok"):
-        message = payload.get("error") or payload.get("message") or payload.get("status")
         raise CommunityDepositsError(
-            f"Community Deposits API error for {context}: {message}"
-        )
+            f"Community Deposits API returned an error for {context}."
+        ) from None
 
     deposits = payload.get("deposits", [])
     if deposits is None:
@@ -160,53 +171,57 @@ def _validate_payload(response, *, context):
     return deposits
 
 
-def fetch_all_deposits(*, cancel_event=None):
+def fetch_all_deposits(*, cancel_event=None, commander=None):
     """Fetch every Community Deposit currently exposed by the API."""
 
     _check_cancel(cancel_event)
 
+    api_key = _read_api_key(commander)
     try:
         response = requests.get(
             DEPOSITS_URL,
-            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json",
+                     "Authorization": f"Bearer {api_key}"},
             timeout=REQUEST_TIMEOUT,
         )
-    except requests.RequestException as exc:
+    except requests.RequestException:
         raise CommunityDepositsError(
-            f"Community Deposits request failed: {exc}"
-        ) from exc
+            "Community Deposits request failed due to a network error."
+        ) from None
 
     _check_cancel(cancel_event)
     deposits = _validate_payload(response, context="all deposits")
     return _normalise_rows(deposits)
 
 
-def fetch_system_deposits(system, *, session=None, cancel_event=None):
+def fetch_system_deposits(system, *, session=None, cancel_event=None, commander=None):
     _check_cancel(cancel_event)
 
     system = str(system or "").strip()
     if not system:
         return list(COMMUNITY_HEADERS), []
 
+    api_key = _read_api_key(commander)
     client = session or requests.Session()
     try:
         response = client.get(
             DEPOSITS_URL,
             params={"system": system},
-            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json",
+                     "Authorization": f"Bearer {api_key}"},
             timeout=REQUEST_TIMEOUT,
         )
-    except requests.RequestException as exc:
+    except requests.RequestException:
         raise CommunityDepositsError(
-            f"Community Deposits request failed for {system}: {exc}"
-        ) from exc
+            f"Community Deposits request failed for {system} due to a network error."
+        ) from None
 
     _check_cancel(cancel_event)
     deposits = _validate_payload(response, context=system)
     return _normalise_rows(deposits, requested_system=system)
 
 
-def fetch_deposits_for_systems(systems, *, cancel_event=None):
+def fetch_deposits_for_systems(systems, *, cancel_event=None, commander=None):
     """Fetch Community Deposits for each selected system."""
 
     all_rows = []
@@ -218,6 +233,7 @@ def fetch_deposits_for_systems(systems, *, cancel_event=None):
                 system,
                 session=session,
                 cancel_event=cancel_event,
+                commander=commander,
             )
             all_rows.extend(rows)
 

@@ -2,11 +2,13 @@
 setlocal
 cd /d "%~dp0"
 
-set "VERSION=v1.0.3"
+set "VERSION=v1.0.4"
 set "BUILD_EXE_NAME=ED Hotspots Finder - Rings & Planets.exe"
 set "ASSET_EXE_NAME=ED-Hotspots-Finder-Rings-and-Planets-%VERSION%.exe"
 set "RELEASE_DIR=%CD%\release\%VERSION%"
-set "DIST_EXE=%CD%\dist-v8\%BUILD_EXE_NAME%"
+set "BUILD_WORK_DIR=%CD%\build-v1.0.4"
+set "BUILD_DIST_DIR=%CD%\dist-v1.0.4"
+set "DIST_EXE=%BUILD_DIST_DIR%\%BUILD_EXE_NAME%"
 set "RELEASE_EXE=%RELEASE_DIR%\%ASSET_EXE_NAME%"
 set "SHA_FILE=%RELEASE_DIR%\SHA256.txt"
 
@@ -39,11 +41,11 @@ if errorlevel 1 (
     goto :fail
 )
 
-if exist "build-v8" rmdir /s /q "build-v8"
-if exist "dist-v8" rmdir /s /q "dist-v8"
+if exist "%BUILD_WORK_DIR%" rmdir /s /q "%BUILD_WORK_DIR%"
+if exist "%BUILD_DIST_DIR%" rmdir /s /q "%BUILD_DIST_DIR%"
 
 echo Building executable...
-python -m PyInstaller --noconfirm --clean --workpath "build-v8" --distpath "dist-v8" "HotspotsFinder-v8.spec"
+python -m PyInstaller --noconfirm --clean --workpath "%BUILD_WORK_DIR%" --distpath "%BUILD_DIST_DIR%" "HotspotsFinder-v8.spec"
 if errorlevel 1 goto :fail
 
 if not exist "%DIST_EXE%" (
