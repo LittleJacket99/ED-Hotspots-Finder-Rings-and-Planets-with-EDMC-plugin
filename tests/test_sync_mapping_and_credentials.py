@@ -233,27 +233,32 @@ class SyncStateResponseTests(unittest.TestCase):
             patch.object(rhinospotter_sync_service, "load_rhinospotter_records", return_value=self.loaded),
             patch.object(rhinospotter_sync_service, "get_sync_state_entry", return_value={}),
             patch.object(rhinospotter_sync_service, "get_api_key", return_value="fixture"),
+            patch.object(rhinospotter_sync_service, "credential_configured", return_value=True),
             patch.object(rhinospotter_sync_service, "send_batch", return_value=response),
             patch.object(rhinospotter_sync_service, "sync_state_mutex", return_value=nullcontext()),
         )
 
+    def _confirmed_sync(self):
+        preview = rhinospotter_sync_service.preview_sync()
+        return rhinospotter_sync_service.confirm_sync(None, preview["snapshot"])
+
     def test_malformed_batch_response_does_not_save_any_fingerprint(self):
         patches = self._patches({"status": "ok", "received": 2, "results": []})
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], \
                 patch.object(rhinospotter_sync_service, "save_sync_state_entry") as save:
             with self.assertRaises(rhinospotter_sync_service.RhinoSpotterSyncError):
-                rhinospotter_sync_service.sync_bookmarks()
+                self._confirmed_sync()
         save.assert_not_called()
 
     def test_duplicate_outgoing_report_ids_are_rejected_before_network(self):
         self.records[1]["report_id"] = self.records[0]["report_id"]
         patches = self._patches({})
-        with patches[0], patches[1], patches[2], patches[3], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
                 patch.object(rhinospotter_sync_service, "send_batch") as send, \
-                patches[5], \
+                patches[6], \
                 patch.object(rhinospotter_sync_service, "save_sync_state_entry") as save:
             with self.assertRaises(rhinospotter_sync_service.RhinoSpotterSyncError):
-                rhinospotter_sync_service.sync_bookmarks()
+                self._confirmed_sync()
         send.assert_not_called()
         save.assert_not_called()
 
@@ -266,9 +271,9 @@ class SyncStateResponseTests(unittest.TestCase):
             ],
         }
         patches = self._patches(response)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], \
                 patch.object(rhinospotter_sync_service, "save_sync_state_entry") as save:
-            summary = rhinospotter_sync_service.sync_bookmarks()
+            summary = self._confirmed_sync()
         entry = save.call_args.args[2]
         self.assertEqual(summary["errors"], 1)
         self.assertIn("id:1", entry["fingerprints"])
@@ -296,11 +301,11 @@ class SyncStateResponseTests(unittest.TestCase):
             }
 
         patches = self._patches({})
-        with patches[0], patches[1], patches[2], patches[3], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
                 patch.object(rhinospotter_sync_service, "send_batch", side_effect=send_while_locked), \
                 patch.object(rhinospotter_sync_service, "sync_state_mutex", tracked_mutex), \
                 patch.object(rhinospotter_sync_service, "save_sync_state_entry"):
-            summary = rhinospotter_sync_service.sync_bookmarks()
+            summary = self._confirmed_sync()
         self.assertEqual(summary["errors"], 0)
 
     def test_plugin_upload_occurs_while_shared_mutex_is_held(self):
@@ -342,10 +347,14 @@ class SyncStateResponseTests(unittest.TestCase):
                 patch.object(plugin_sync, "load_bookmarks", return_value=loaded), \
                 patch.object(plugin_sync, "_get_sync_state_entry", return_value={}), \
                 patch.object(plugin_sync, "get_api_key", return_value="fixture"), \
+                patch.object(plugin_sync, "credential_configured", return_value=True), \
                 patch.object(plugin_sync, "send_deposit_batch", side_effect=send_while_locked), \
                 patch.object(plugin_sync, "sync_state_mutex", tracked_mutex), \
                 patch.object(plugin_sync, "_save_sync_state_entry"):
-            summary = plugin_sync.sync_bookmarks("plugin-dir", commander="CMDR")
+            preview = plugin_sync.preview_sync("plugin-dir", commander="CMDR")
+            summary = plugin_sync.confirm_sync(
+                "plugin-dir", commander="CMDR", expected_snapshot=preview["snapshot"]
+            )
         self.assertEqual(summary["errors"], 0)
 
     def test_mutex_timeout_closes_handle_without_release(self):

@@ -28,7 +28,6 @@ DEFAULT_SETTINGS = {
     "rhinospotter": {
         # Empty means use the standard %LOCALAPPDATA%\RhinoSpotter data root.
         "data_path": "",
-        "ask_before_sync": True,
     },
     "community_api": {
         "commander": "",
@@ -67,13 +66,19 @@ def _read_root_config():
 
 def load_settings():
     root = _read_root_config()
-    return _merge_defaults(DEFAULT_SETTINGS, root.get(SETTINGS_KEY, {}))
+    settings = _merge_defaults(DEFAULT_SETTINGS, root.get(SETTINGS_KEY, {}))
+    # Older v1.0.4 configurations may contain this now-obsolete preference.
+    # Ignore it so it can never affect the mandatory Sync Preview flow.
+    settings.get("rhinospotter", {}).pop("ask_before_sync", None)
+    return settings
 
 
 def save_settings(settings):
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     root = _read_root_config()
-    root[SETTINGS_KEY] = _merge_defaults(DEFAULT_SETTINGS, settings)
+    normalized = _merge_defaults(DEFAULT_SETTINGS, settings)
+    normalized.get("rhinospotter", {}).pop("ask_before_sync", None)
+    root[SETTINGS_KEY] = normalized
 
     temp_path = CONFIG_PATH.with_suffix(".json.tmp")
     temp_path.write_text(

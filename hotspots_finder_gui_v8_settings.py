@@ -56,7 +56,6 @@ class FinderV8SettingsMixin:
         self.rhinospotter_data_path = str(
             app_settings.resolve_rhinospotter_data_path(self.v8_settings)
         )
-        self.ask_before_rhino_sync = bool(rhino.get("ask_before_sync", True))
 
     @staticmethod
     def _format_distance(value):
@@ -222,12 +221,11 @@ class FinderV8SettingsMixin:
                 browse_button.place_configure(y=25)
                 auto_button.place_configure(y=25)
                 status_label.place_configure(y=55, height=20)
-                ask_sync_check.place_configure(y=78)
-                commander_label.place_configure(y=104)
-                api_commander_entry.place_configure(y=101)
-                api_key_label.place_configure(y=133)
-                api_key_entry.place_configure(y=130)
-                rhino_help_label.place_configure(y=159, height=38)
+                commander_label.place_configure(y=78)
+                api_commander_entry.place_configure(y=75)
+                api_key_label.place_configure(y=112)
+                api_key_entry.place_configure(y=109)
+                rhino_help_label.place_configure(y=146, height=38)
             else:
                 startup_panel.place_configure(x=18, y=18, width=564, height=185)
                 rhino_panel.place_configure(x=18, y=209, width=564, height=270)
@@ -237,12 +235,11 @@ class FinderV8SettingsMixin:
                 browse_button.place_configure(y=38)
                 auto_button.place_configure(y=38)
                 status_label.place_configure(y=77)
-                ask_sync_check.place_configure(y=109)
-                commander_label.place_configure(y=139)
-                api_commander_entry.place_configure(y=135)
-                api_key_label.place_configure(y=173)
-                api_key_entry.place_configure(y=169)
-                rhino_help_label.place_configure(y=207, height=45)
+                commander_label.place_configure(y=109)
+                api_commander_entry.place_configure(y=105)
+                api_key_label.place_configure(y=143)
+                api_key_entry.place_configure(y=139)
+                rhino_help_label.place_configure(y=177, height=45)
 
             action_y = logical_height - (29 if compact_layout else 43)
             if logical_width < 420:
@@ -294,9 +291,6 @@ class FinderV8SettingsMixin:
         rhino_path_var = tk.StringVar(
             window,
             value=saved_rhino_path or auto_rhino_path,
-        )
-        ask_sync_var = tk.BooleanVar(
-            window, value=bool(rhino.get("ask_before_sync", True))
         )
         community_api = self.v8_settings.get("community_api", {})
         api_commander_var = tk.StringVar(
@@ -441,29 +435,20 @@ class FinderV8SettingsMixin:
         )
         status_label.place(x=12, y=77, width=532, height=24)
 
-        ask_sync_check = check(
-            rhino_panel,
-            "Ask before exporting bookmarks to Community Deposits",
-            ask_sync_var,
-            12,
-            109,
-            width=360,
-        )
-
         commander_label = tk.Label(rhino_panel, text="Commander", bg=COLORS["panel"], fg=COLORS["muted"],
                                    font=("Segoe UI", 9))
-        commander_label.place(x=12, y=139)
+        commander_label.place(x=12, y=109)
         api_commander_entry = tk.Entry(rhino_panel, textvariable=api_commander_var, bg="#3b3b3b",
                  fg=COLORS["text"], insertbackground=COLORS["text"], relief="flat",
                  font=("Segoe UI", 9))
-        api_commander_entry.place(x=92, y=135, width=180, height=25)
+        api_commander_entry.place(x=92, y=105, width=180, height=25)
         api_key_label = tk.Label(rhino_panel, text="API Key", bg=COLORS["panel"], fg=COLORS["muted"],
                                  font=("Segoe UI", 9))
-        api_key_label.place(x=12, y=173)
+        api_key_label.place(x=12, y=143)
         api_key_entry = tk.Entry(rhino_panel, textvariable=api_key_var, bg="#3b3b3b",
                                  fg=COLORS["text"], insertbackground=COLORS["text"], relief="flat",
                                  font=("Segoe UI", 9))
-        api_key_entry.place(x=82, y=169, width=400, height=25)
+        api_key_entry.place(x=82, y=139, width=400, height=25)
 
         rhino_help_label = tk.Label(
             rhino_panel,
@@ -479,7 +464,7 @@ class FinderV8SettingsMixin:
             wraplength=525,
             font=("Segoe UI", 8),
         )
-        rhino_help_label.place(x=12, y=207, width=530, height=45)
+        rhino_help_label.place(x=12, y=177, width=530, height=45)
 
         def refresh_rhino_status(_event=None):
             text = str(rhino_path_var.get() or "").strip()
@@ -559,14 +544,12 @@ class FinderV8SettingsMixin:
             max_distance_var.set("50")
             remember_var.set(False)
             rhino_path_var.set(auto_rhino_path)
-            ask_sync_var.set(True)
             api_commander_var.set("")
             api_key_var.set("")
             refresh_rhino_status()
 
         def restore_dialog_values():
             current_startup = self.v8_settings.get("startup", {})
-            current_rhino = self.v8_settings.get("rhinospotter", {})
 
             hotspot_var.set(bool(current_startup.get("hotspots_enabled", True)))
             planets_var.set(bool(current_startup.get("planets_enabled", True)))
@@ -584,7 +567,6 @@ class FinderV8SettingsMixin:
                 app_settings.resolve_rhinospotter_data_path(self.v8_settings)
             )
             rhino_path_var.set(current_path)
-            ask_sync_var.set(bool(current_rhino.get("ask_before_sync", True)))
             api_commander_var.set(str(
                 self.v8_settings.get("community_api", {}).get("commander", "") or ""
             ))
@@ -648,7 +630,6 @@ class FinderV8SettingsMixin:
             }
             self.v8_settings["rhinospotter"] = {
                 "data_path": stored_rhino_path,
-                "ask_before_sync": bool(ask_sync_var.get()),
             }
             commander = str(api_commander_var.get() or "").strip()
             self.v8_settings["community_api"] = {"commander": commander}

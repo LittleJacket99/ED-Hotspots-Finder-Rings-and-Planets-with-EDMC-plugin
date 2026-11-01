@@ -348,11 +348,11 @@ def load_bookmarks(
 def sync_bookmarks(
     plugin_dir: str | Path, *, commander: str | None = None
 ) -> dict[str, Any]:
-    """Serialize read/decide/upload/save with the desktop client's sync."""
-    if not (commander or "").strip():
-        raise RhinoSpotterError("Active commander is required to synchronize bookmarks.")
-    with sync_state_mutex():
-        return _sync_bookmarks_under_mutex(plugin_dir, commander=commander)
+    """Reject legacy direct uploads; a preview and explicit confirmation are required."""
+    del plugin_dir, commander
+    raise RhinoSpotterError(
+        "Direct bookmark sync is disabled. Use preview_sync() and confirm_sync()."
+    )
 
 
 def _read_sync_inputs(
@@ -407,18 +407,6 @@ def confirm_sync(
                 "RhinoSpotter bookmark commander does not match the active commander."
             )
         return _execute_sync_plan(path, loaded, state, plan, commander)
-
-
-def _sync_bookmarks_under_mutex(
-    plugin_dir: str | Path, *, commander: str | None = None
-) -> dict[str, Any]:
-    """Implementation called while the shared state mutex is held."""
-    path, loaded, state, plan = _read_sync_inputs(plugin_dir, commander or "")
-    if plan["commander_mismatches"]:
-        raise RhinoSpotterError(
-            "RhinoSpotter bookmark commander does not match the active commander."
-        )
-    return _execute_sync_plan(path, loaded, state, plan, commander)
 
 
 def _execute_sync_plan(path, loaded, state, plan, commander):

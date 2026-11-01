@@ -759,91 +759,58 @@ def main():
 
     args = parser.parse_args()
 
-    loaded = load_rhinospotter_records(args.source)
-    deposits = loaded["deposits"]
-    source_type = loaded["source_type"]
-    source_path = loaded["source_path"]
+    # The command-line utility follows the same preview/confirm contract as the
+    # GUIs. It is intentionally interactive unless --dry-run is supplied.
+    from rhinospotter_sync_service import confirm_sync, preview_sync
 
-    print()
-    source_labels = {
-        "rs_api": "RhinoSpotter API",
-        "sqlite": "SQLite database (legacy fallback)",
-        "legacy_json": "Legacy JSON cards",
-    }
-    print("Source type: " + source_labels.get(source_type, source_type))
-    print(f"Source: {source_path}")
-    if source_type == "rs_api":
-        version = loaded.get("api_version") or "unknown"
-        schema = loaded.get("api_schema")
-        print(f"RhinoSpotter version: {version}")
-        print(f"API schema: {schema}")
-    print(f"Bookmarks found: {loaded['records_found']}")
-    print(f"Valid records: {loaded['records_valid']}")
-    print(f"Planet radii inferred from same body: {loaded['radius_inferred']}")
-    print(f"Planet radii still unknown: {loaded['radius_missing']}")
-    print(f"Read errors: {loaded['read_errors']}")
-    print()
+    plan = preview_sync(args.source)
+    pending = plan.get("preview_pending", [])
+    print(f"Source type: {plan.get('source_type', 'unknown')}")
+    print(f"Source: {plan.get('source_path', '')}")
+    print(f"Commander: {plan.get('commander') or '(unknown)'}")
+    print(f"Records found: {plan.get('records_found', 0)}")
+    print(f"Valid records: {plan.get('records_valid', 0)}")
+    print(f"New: {plan.get('new', 0)}")
+    print(f"Modified: {plan.get('modified', 0)}")
+    print(f"Unchanged: {plan.get('unchanged', 0)}")
+    print(f"Skipped: {plan.get('skipped', 0)}")
+    if plan.get("credential_missing"):
+        print(f"Records skipped for missing API credentials: {plan['credential_missing']}")
 
-    for index, deposit in enumerate(deposits, start=1):
+    for index, item in enumerate(pending, start=1):
+        deposit = item["record"]
         print(
-            f"[{index}] "
-            f"{deposit.get('system')} | "
-            f"{deposit.get('planet_name')} | "
-            f"{deposit.get('commodity')} | "
-            f"CMDR {deposit.get('commander', '-')}"
+            f"[{index}] {item['status']} | {deposit.get('system')} | "
+            f"{deposit.get('planet_name')} | {deposit.get('commodity')} | "
+            f"report_id: {deposit.get('report_id')}"
         )
-
-        print(f"    report_id: {deposit['report_id']}")
-
-        if deposit.get("updated_at"):
-            print(f"    updated_at: {deposit['updated_at']}")
-
-        if deposit.get("depleted_at"):
-            print(f"    depleted_at: {deposit['depleted_at']}")
-
-    print()
 
     if args.dry_run:
         print("DRY RUN: no data sent.")
         return
-
-    if not deposits:
-        print("No records to synchronize.")
+    if not pending:
+        print("No eligible new or modified records to synchronize.")
         return
 
-    inserted = 0
-    matched = 0
-    updated = 0
-    unchanged = 0
-    errors = loaded["read_errors"]
+    try:
+        answer = input("Type SYNC to confirm sending these records: ").strip()
+    except EOFError:
+        answer = ""
+    if answer != "SYNC":
+        print("Synchronization cancelled; no data sent.")
+        return
 
-    for batch in chunks(deposits, MAX_BATCH_SIZE):
-        result = send_batch(batch)
+    result = confirm_sync(args.source, plan["snapshot"])
+    if result.get("stale"):
+        print("The source or sync state changed. Review a new preview before syncing.")
+        return
 
-        for item in result.get("results", []):
-            if not item.get("ok"):
-                errors += 1
-                print("[SERVER ERROR]", item)
-                continue
-
-            action = item.get("action")
-
-            if action == "inserted":
-                inserted += 1
-            elif action == "matched_existing_deposit":
-                matched += 1
-            elif action == "updated_report":
-                updated += 1
-            elif action == "unchanged":
-                unchanged += 1
-
-    print()
     print("Synchronization completed.")
-    print(f"New deposits: {inserted}")
-    print(f"Reports matched to existing deposits: {matched}")
-    print(f"Updated reports: {updated}")
-    print(f"Unchanged reports: {unchanged}")
-    print(f"Errors: {errors}")
+    print(f"New deposits: {result.get('inserted', 0)}")
+    print(f"Reports matched to existing deposits: {result.get('matched', 0)}")
+    print(f"Updated reports: {result.get('updated', 0)}")
+    print(f"Unchanged reports: {result.get('unchanged', 0)}")
+    print(f"Errors: {result.get('errors', 0)}")
 
 
 if __name__ == "__main__":

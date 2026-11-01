@@ -81,14 +81,11 @@ def inspect_source(data_path=None):
 
 
 def sync_bookmarks(data_path=None):
-    """Serialize the full read/decide/upload/save cycle across both clients.
-
-    The Worker has no conditional-write/version field. Releasing the shared
-    mutex during POSTs would let an older bookmark snapshot overwrite a newer
-    report, even if the local fingerprint merge were correct.
-    """
-    with sync_state_mutex():
-        return _sync_bookmarks_under_mutex(data_path)
+    """Reject legacy direct uploads; a preview and explicit confirmation are required."""
+    del data_path
+    raise RhinoSpotterSyncError(
+        "Direct bookmark sync is disabled. Use preview_sync() and confirm_sync()."
+    )
 
 
 def _read_sync_inputs(data_path=None, *, check_credentials=False):
@@ -125,20 +122,6 @@ def confirm_sync(data_path, expected_snapshot):
         if plan["snapshot"] != expected_snapshot:
             return {"stale": True, "plan": plan}
         return _execute_sync_plan(source_type, source_path, loaded, state, plan)
-
-
-def _sync_bookmarks_under_mutex(data_path=None):
-    """Synchronize only new or changed RhinoSpotter bookmarks.
-
-    Bookmarks are read locally, compared by stable identity and fingerprint,
-    and only new/modified records are uploaded. RhinoSpotter revision() is
-    retained as metadata but is not used as the sole skip condition because
-    its aggregate value may remain unchanged after an edit to an arbitrary
-    bookmark row. SQLite/JSON fallbacks use the same fingerprint filtering.
-    """
-
-    source_type, source_path, loaded, state, plan = _read_sync_inputs(data_path)
-    return _execute_sync_plan(source_type, source_path, loaded, state, plan)
 
 
 def _execute_sync_plan(source_type, source_path, loaded, state, plan):
