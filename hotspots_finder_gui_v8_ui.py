@@ -1129,19 +1129,31 @@ class FinderV8FinalUIApp(FinderV8FinalBaseApp):
 
         notebook.bind(
             "<Configure>",
-            lambda _e: self.after_idle(self._sync_results_outline),
+            self._schedule_results_outline_sync,
             add="+",
         )
         notebook.bind(
             "<Map>",
-            lambda _e: self.after_idle(self._sync_results_outline),
+            self._schedule_results_outline_sync,
             add="+",
         )
         self.bind(
             "<Configure>",
-            lambda _e: self.after_idle(self._sync_results_outline),
+            self._schedule_results_outline_sync,
             add="+",
         )
+        self._sync_results_outline()
+
+    def _schedule_results_outline_sync(self, event=None):
+        # Root bindings also receive descendant Configure events. Ignore those
+        # from the decorative lines themselves and coalesce notebook/root work.
+        if event is not None and event.widget not in (self, self.notebook):
+            return
+        if getattr(self, "_results_outline_after_id", None) is None:
+            self._results_outline_after_id = self.after_idle(self._run_results_outline_sync)
+
+    def _run_results_outline_sync(self):
+        self._results_outline_after_id = None
         self._sync_results_outline()
 
     def _sync_results_outline(self):

@@ -3,8 +3,10 @@
 """GUI-friendly wrapper around the RhinoSpotter synchronization logic."""
 
 import sqlite3
+from edmc_plugin.EDHF_Community_Navigator.community_api import BATCH_PAUSE_SECONDS
 from contextlib import closing
 from pathlib import Path
+from time import sleep
 from collections import defaultdict
 
 from edmc_plugin.EDHF_Community_Navigator.api_credentials import (
@@ -14,6 +16,7 @@ from edmc_plugin.EDHF_Community_Navigator.api_credentials import (
 from edmc_plugin.EDHF_Community_Navigator.batch_protocol import (
     validate_batch_request,
     validate_batch_response,
+    record_sync_failure, initialize_outcomes, cache_outcomes, transport_failure,
 )
 from edmc_plugin.EDHF_Community_Navigator.sync_state_lock import sync_state_mutex
 from edmc_plugin.EDHF_Community_Navigator.sync_plan import (
@@ -156,6 +159,7 @@ def _execute_sync_plan(source_type, source_path, loaded, state, plan):
         "state_saved": False,
     }
 
+    initialize_outcomes(summary, plan)
     successful_keys = set()
     sent_count = 0
     by_commander = defaultdict(list)
@@ -170,8 +174,11 @@ def _execute_sync_plan(source_type, source_path, loaded, state, plan):
         commander = commander_items[0][0]
         api_key = get_api_key(commander)
         if not api_key:
-            summary["errors"] += len(commander_items)
+            for _, record in commander_items:
+                record_sync_failure(summary, str(record["report_id"]), {"error_code":"AUTH_REQUIRED"}, record)
             continue
+        throttled = False
+        attempted_batch = False
         for batch_items in chunks([record for _, record in commander_items], MAX_BATCH_SIZE):
             try:
                 validate_batch_request(batch_items)
@@ -193,16 +200,37 @@ def _execute_sync_plan(source_type, source_path, loaded, state, plan):
                 raise RhinoSpotterSyncError(
                     "Bookmark commander does not match the configured API profile."
                 )
-            result = send_batch(batch_items, api_key=api_key)
+            if throttled:
+                for record in batch_items:
+                    record_sync_failure(summary, str(record["report_id"]), {}, record)
+                continue
+            if attempted_batch:
+                sleep(BATCH_PAUSE_SECONDS)
+            attempted_batch = True
+            sent_count += len(batch_items)
+            try:
+                result = send_batch(batch_items, api_key=api_key)
+            except (RuntimeError, OSError, ValueError) as exc:
+                # Only confirmed receipts advance fingerprints. Later independent
+                # batches still run; throttling stops further HTTP until manual Sync.
+                throttled = "429" in str(exc)
+                if throttled:
+                    summary["throttled"] = True
+                for record in batch_items:
+                    record_sync_failure(summary, str(record["report_id"]), transport_failure(exc), record)
+                continue
             try:
                 result_by_report = validate_batch_response(batch_items, result)
-            except ValueError as exc:
-                raise RhinoSpotterSyncError(str(exc)) from exc
-            sent_count += len(batch_items)
+            except ValueError:
+                # An untrusted/incomplete receipt never advances fingerprints.
+                for record in batch_items:
+                    record_sync_failure(summary, str(record["report_id"]), {}, record)
+                continue
             for report_id, item in result_by_report.items():
                 if not item["ok"]:
-                    summary["errors"] += 1
+                    record_sync_failure(summary, report_id, item, next(record for record in batch_items if str(record["report_id"]) == report_id))
                     continue
+                summary["synced"] += 1
                 action = item["action"]
                 if action == "inserted":
                     summary["inserted"] += 1
@@ -216,39 +244,17 @@ def _execute_sync_plan(source_type, source_path, loaded, state, plan):
 
     summary["records_sent"] = sent_count
 
-    # Only mark the source revision complete after a clean, stable read and
-    # successful server processing. If anything failed, retain successful
-    # fingerprints but force a full comparison on the next Sync Bookmarks.
-    complete = summary["errors"] == 0
+    # Complete means this stable revision was handled, including known skips;
+    # it never counts a rejection as synced. Recoverable failures stay pending.
+    # Accepted fingerprints and rejected versions remain separate below.
+    complete = not summary["pending_reports"] and not loaded["read_errors"] and not plan["commander_mismatches"]
     if source_type == "rs_api" and not loaded.get("revision_stable"):
         complete = False
 
     try:
         with sync_state_mutex():
             latest = get_sync_state_entry(source_type, source_path)
-            latest_fingerprints = latest.get("fingerprints", {})
-            if not isinstance(latest_fingerprints, dict):
-                latest_fingerprints = {}
-            latest_depletion_states = latest.get("depletion_states", {})
-            if not isinstance(latest_depletion_states, dict):
-                latest_depletion_states = {}
-            if summary["errors"] == 0:
-                saved_fingerprints = current_fingerprints
-                saved_depletion_states = {
-                    key: value for key, value in latest_depletion_states.items()
-                    if key in current_fingerprints
-                }
-                saved_depletion_states.update(plan["current_depletion_states"])
-            else:
-                saved_fingerprints = dict(latest_fingerprints)
-                saved_depletion_states = dict(latest_depletion_states)
-                for key in successful_keys:
-                    if key in current_fingerprints:
-                        saved_fingerprints[key] = current_fingerprints[key]
-                        if key in plan["current_depletion_states"]:
-                            saved_depletion_states[key] = plan[
-                                "current_depletion_states"
-                            ][key]
+            saved_fingerprints, saved_depletion_states, saved_rejections = cache_outcomes(latest, plan, successful_keys, summary)
             state_entry = {
                 "complete": complete,
                 "revision": (
@@ -261,6 +267,7 @@ def _execute_sync_plan(source_type, source_path, loaded, state, plan):
                 "radius_missing": loaded.get("radius_missing", 0),
                 "fingerprints": saved_fingerprints,
                 "depletion_states": saved_depletion_states,
+                "rejections": saved_rejections,
             }
             save_sync_state_entry(source_type, source_path, state_entry)
     except OSError as exc:

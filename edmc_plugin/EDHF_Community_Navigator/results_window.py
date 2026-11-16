@@ -6,6 +6,8 @@ from tkinter import ttk
 from typing import Any, Callable
 
 from theme import theme
+from .shared_state import shared_state_display
+from .message_label import MessageLabel
 
 
 COLUMNS = (
@@ -13,13 +15,11 @@ COLUMNS = (
     "Location",
     "Material",
     "Rigs",
-    "Amount",
     "Density",
-    "Depleted at",
+    "Status",
     "Latitude",
     "Longitude",
     "Reports",
-    "Updated",
 )
 
 CENTERED_COLUMNS = {"Location", "Rigs", "Reports"}
@@ -89,9 +89,18 @@ class DepositsWindow:
         system: str,
         records: list[dict[str, Any]],
         on_track: Callable[[dict[str, Any]], None],
+        on_report=None,
+        on_retry=None,
+        pending=None,
+        report_available=None,
     ):
         self.records = records
         self.on_track = on_track
+        self.on_report, self.on_retry = on_report, on_retry
+        self.pending = pending
+        self.report_available = report_available or (lambda: False)
+        self.report_busy = False
+        self.confirming = False
         self.selected_index: int | None = 0 if records else None
         self.row_widgets: dict[int, list[tk.Label]] = {}
         self.colours = theme_colours()
@@ -125,13 +134,11 @@ class DepositsWindow:
                 str(_first(record, "location_index", "location")),
                 str(_first(record, "commodity", "material")),
                 str(_first(record, "rigs")),
-                str(_first(record, "amount")),
                 str(_first(record, "density")),
-                _format_depleted_at(record.get("depleted_at")),
+                shared_state_display(record)[0],
                 str(_first(record, "latitude", "lat")),
                 str(_first(record, "longitude", "lon", "lng")),
                 str(_first(record, "report_count", "reports_count", "reports")),
-                str(_first(record, "updated_at", "last_reported_at", "last_seen_at")),
             )
             for record in records
         ]
@@ -171,9 +178,8 @@ class DepositsWindow:
         )
         scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
 
-        self.canvas.configure(
-            yscrollcommand=scroll_y.set,
-        )
+        self.canvas.configure(yscrollcommand=lambda first, last: self._set_scrollbar(
+            scroll_y, first, last, side=tk.RIGHT, fill=tk.Y))
 
         self.table = tk.Frame(
             self.canvas,
@@ -185,6 +191,11 @@ class DepositsWindow:
             anchor="nw",
         )
 
+        scroll_x = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        scroll_x.pack(fill=tk.X)
+        self.canvas.configure(xscrollcommand=lambda first, last: self._set_scrollbar(
+            scroll_x, first, last, fill=tk.X, before=self._buttons))
+
         self._build_header()
         self._build_rows()
 
@@ -194,6 +205,7 @@ class DepositsWindow:
             outer,
             background=self.colours["background"],
         )
+        self._buttons = buttons
         buttons.pack(fill=tk.X, pady=(10, 0))
 
         ttk.Button(
@@ -201,6 +213,18 @@ class DepositsWindow:
             text="Start Tracking",
             command=self._track_selected,
         ).pack(side=tk.RIGHT)
+
+        self.report_button = ttk.Menubutton(buttons, text="Status Report")
+        self.report_menu = tk.Menu(self.report_button, tearoff=False,
+            background=self.colours["background"], foreground=self.colours["foreground"],
+            activebackground=self.colours["selected_bg"], activeforeground=self.colours["selected_fg"])
+        self.report_menu.add_command(label="Report Active", command=lambda: self._report_selected("active"))
+        self.report_menu.add_command(label="Report Depleted", command=lambda: self._report_selected("depleted"))
+        self.report_button.configure(menu=self.report_menu)
+        self.report_button.pack(side=tk.RIGHT, padx=(0, 8))
+        self.report_message = MessageLabel(outer, bg=self.colours["background"], fg=self.colours["foreground"],
+                                          justify=tk.LEFT, anchor="w")
+        # Feedback consumes space only during a send or when a message exists.
 
         self._apply_selection()
 
@@ -318,6 +342,58 @@ class DepositsWindow:
                     foreground=foreground,
                 )
 
+        if hasattr(self, "report_button"):
+            self.refresh_report_controls()
+
+    def refresh_report_controls(self):
+        record = self.records[self.selected_index] if self.selected_index is not None and 0 <= self.selected_index < len(self.records) else None
+        try:
+            available = bool(self.report_available())
+        except Exception:
+            available = False
+        valid = record is not None and type(record.get("id")) is int and 0 < record["id"] <= 9007199254740991
+        idle = not self.report_busy and not self.confirming
+        new_allowed = idle and available and valid and record.get("_can_report_state") is True and not self.pending
+        retry_allowed = idle and available and bool(self.pending)
+        self.report_button.configure(state=tk.NORMAL if new_allowed or retry_allowed else tk.DISABLED)
+        for index in (0, 1):
+            self.report_menu.entryconfigure(index, state=tk.NORMAL if new_allowed else tk.DISABLED)
+        if self.report_menu.index("end") is not None and self.report_menu.index("end") >= 2:
+            self.report_menu.delete(2, tk.END)
+        if retry_allowed:
+            self.report_menu.add_separator()
+            self.report_menu.add_command(label="Retry pending Status Report", command=self._retry_report)
+        for row_index, item in enumerate(self.records):
+            if row_index in self.row_widgets:
+                self.row_widgets[row_index][COLUMNS.index("Status")].configure(text=shared_state_display(item)[0])
+        if self.report_message.cget("text"):
+            self.report_message.pack(fill=tk.X, pady=(4, 0))
+        else:
+            self.report_message.pack_forget()
+
+    def _report_selected(self, state):
+        if self.report_busy or self.confirming or self.pending or self.on_report is None:
+            return
+        if self.selected_index is None or not 0 <= self.selected_index < len(self.records):
+            return
+        record = self.records[self.selected_index]
+        if type(record.get("id")) is not int or record["id"] <= 0 or record.get("_can_report_state") is not True or not self.report_available():
+            return
+        self.confirming = True
+        self.refresh_report_controls()
+        try:
+            from .status_report_dialog import show_status_confirmation
+            if show_status_confirmation(self.window, record, state, palette=self.colours, apply_theme=theme.update):
+                self.on_report(record, state)
+        finally:
+            self.confirming = False
+            if self.window.winfo_exists():
+                self.refresh_report_controls()
+
+    def _retry_report(self):
+        if not self.report_busy and not self.confirming and self.pending and self.report_available() and self.on_retry:
+            self.on_retry()
+
     def _track_index(self, index: int) -> None:
         self._select(index)
         self._track_selected()
@@ -334,6 +410,13 @@ class DepositsWindow:
             scrollregion=self.canvas.bbox("all"),
         )
 
+    def _set_scrollbar(self, scrollbar, first, last, **pack_options):
+        scrollbar.set(first, last)
+        if float(first) <= 0 and float(last) >= 1:
+            scrollbar.pack_forget()
+        elif not scrollbar.winfo_manager():
+            scrollbar.pack(**pack_options)
+
     def _size_window(self, table_width: int) -> None:
         self.window.update_idletasks()
 
@@ -349,9 +432,6 @@ class DepositsWindow:
 
         self.window.geometry(f"{window_width}x{window_height}")
 
-        # The popup is fully auto-sized to its contents, so keep it fixed:
-        # this disables maximize/full-screen style resizing and avoids layout
-        # changes that could hide the action row.
-        self.window.resizable(False, False)
-        self.window.minsize(window_width, window_height)
-        self.window.maxsize(window_width, window_height)
+        self.window.resizable(True, True)
+        self.window.minsize(min(window_width, 650), min(window_height, 220))
+        self.window.maxsize(int(screen_width*0.98), int(self.window.winfo_screenheight()*0.92))

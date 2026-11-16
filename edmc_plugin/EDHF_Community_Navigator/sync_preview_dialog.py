@@ -64,9 +64,17 @@ def show_sync_preview(
     apply_theme: Callable[[tk.Widget], None] | None = None,
     position_window: Callable[[tk.Toplevel], None] | None = None,
     button_factory: Callable[..., tk.Widget] | None = None,
+    message_factory: Callable[..., tk.Widget] | None = None,
 ) -> bool:
     """Return True only after explicit confirmation; closing is Cancel."""
+    if message_factory is not None:
+        from .edmc_sync_dialog import show_edmc_sync_preview
+        return show_edmc_sync_preview(parent, plan, palette=palette, apply_theme=apply_theme,
+                                      position_window=position_window, button_factory=button_factory,
+                                      message_factory=message_factory)
     palette = palette or {}
+    # Finder keeps its existing labels and layout; EDMC supplies its own widget.
+    message_factory = message_factory or tk.Label
     bg = palette.get("panel", palette.get("background", parent.cget("background")))
     surface = palette.get("panel2", palette.get("background", bg))
     fg = palette.get("text", palette.get("foreground", "#202020"))
@@ -113,7 +121,7 @@ def show_sync_preview(
         outer, text="Commander", bg=bg, fg=muted, anchor="center",
         font=(font_family, 9),
     ).grid(row=0, column=0, sticky="ew")
-    commander_label = tk.Label(
+    commander_label = message_factory(
         outer, text=commander, bg=bg, fg=fg, anchor="center",
         font=(font_family, 12, "bold"), wraplength=390,
     )
@@ -148,28 +156,32 @@ def show_sync_preview(
     elif missing_credentials:
         noun = "deposit needs" if missing_credentials == 1 else "deposits need"
         primary_message = f"{missing_credentials} {noun} API credentials before syncing."
+    elif plan.get("skipped"):
+        primary_message = f"{plan['skipped']} Skipped; source changes are required before these versions can be uploaded."
     else:
         primary_message = "All deposits are up to date"
-    tk.Label(
+    message_factory(
         outer, text=primary_message, bg=bg, fg=fg, anchor="center",
         justify="center", wraplength=390,
     ).grid(row=3, column=0, sticky="ew", pady=(12, 0))
 
     warnings = []
-    skipped = int(plan.get("invalid", 0) or 0) + int(
-        plan.get("commander_mismatches", 0) or 0
-    )
+    skipped = int(plan.get("skipped", 0) or 0)
     if missing_credentials and ready:
         noun = "deposit" if missing_credentials == 1 else "deposits"
         warnings.append(f"API credentials missing for {missing_credentials} {noun}.")
     if skipped:
         warnings.append(f"Skipped records: {skipped}.")
+        from .batch_protocol import sync_failure_text
+        reason = sync_failure_text({"skipped_reports": plan.get("skipped_reports", [])})
+        if reason:
+            warnings.append(reason)
     if plan.get("confirm_blocked") and not int(
         plan.get("commander_mismatches", 0) or 0
     ):
         warnings.append("Synchronization is unavailable until the Commander is verified.")
     if warnings:
-        tk.Label(
+        message_factory(
             outer, text="\n".join(warnings), bg=bg, fg=muted,
             anchor="center", justify="center", wraplength=390,
         ).grid(row=4, column=0, sticky="ew", pady=(7, 0))

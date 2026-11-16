@@ -34,17 +34,26 @@ def record_state_key(record: dict[str, Any]) -> str:
     return f"report:{record.get('report_id', '')}"
 
 
-def record_fingerprint(record: dict[str, Any]) -> str:
-    # RhinoSpotter releases may represent an active bookmark as either an
-    # omitted depleted_at field or an explicit JSON null. Those are the same
-    # bookmark state for fingerprinting; null is only meaningful as an API
-    # command during a confirmed transition out of depletion.
-    if record.get("depleted_at", object()) is None:
-        record = {key: value for key, value in record.items() if key != "depleted_at"}
-    canonical = json.dumps(
-        record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
+def _record_fingerprint(record: dict[str, Any], *, include_version: bool) -> str:
+    # Null and omitted active-state snapshots remain equivalent here; explicit
+    # reactivation is handled separately from fingerprinting by build_sync_plan.
+    record = {key: value for key, value in record.items()
+              if not (key == "depleted_at" and value is None)
+              and (include_version or key != "updated_at")}
+    canonical = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def record_fingerprint(record: dict[str, Any]) -> str:
+    # Versions alone are not observations/content. Technical metadata stays in
+    # this sync fingerprint so a real missing-radius/ID completion is sent once.
+    return _record_fingerprint(record, include_version=False)
+
+
+def rejection_fingerprint(record):
+    # A real source version can resolve a rejection even when content is equal.
+    # Normal successful fingerprints deliberately continue to ignore versions.
+    return _record_fingerprint(record, include_version=True)
 
 
 def _digest(value: Any) -> str:
@@ -74,6 +83,11 @@ def build_sync_plan(
     if not isinstance(previous_depletion_states, dict):
         previous_depletion_states = {}
     unchanged = 0
+    accepted_unchanged_keys = []
+    rejected = state_entry.get("rejections", {})
+    if not isinstance(rejected, dict):
+        rejected = {}
+    skipped_reports = []
     mismatches = 0
     for record in records:
         actual = str(record.get("commander") or "").strip()
@@ -86,21 +100,22 @@ def build_sync_plan(
         if "depleted_at" in record:
             current_depletion_states[key] = record.get("depleted_at")
         old = previous_fingerprints.get(key)
-        if old == fingerprint:
+        upload_record = dict(record)
+        depletion = record.get("depleted_at", _MISSING)
+        previous_depletion = previous_depletion_states.get(key, _MISSING)
+        if depletion is None and previous_depletion in (_MISSING, None):
+            upload_record.pop("depleted_at", None)
+        elif depletion is _MISSING:
+            upload_record.pop("depleted_at", None)
+        refusal = rejected.get(key)
+        if isinstance(refusal, dict) and refusal.get("fingerprint") == rejection_fingerprint(upload_record):
+            skipped_reports.append({"report_id": record.get("report_id"), "error_code": refusal.get("reason", "INVALID_REPORT")})
+        elif old == fingerprint or old == _record_fingerprint(record, include_version=True):
             unchanged += 1
+            accepted_unchanged_keys.append(key)
             status = "Unchanged"
         else:
             status = "New" if old is None else "Modified"
-            upload_record = dict(record)
-            depletion = record.get("depleted_at", _MISSING)
-            previous_depletion = previous_depletion_states.get(key, _MISSING)
-            if depletion is None and previous_depletion in (_MISSING, None):
-                # Do not turn a source's ordinary active/null representation
-                # into a reactivation command. Unknown legacy state is treated
-                # conservatively until a depletion timestamp is observed.
-                upload_record.pop("depleted_at", None)
-            elif depletion is _MISSING:
-                upload_record.pop("depleted_at", None)
             pending.append({"record": upload_record, "status": status})
 
     invalid = max(
@@ -115,7 +130,7 @@ def build_sync_plan(
     source_snapshot = {
         "source_type": source_type,
         "source_path": source_path,
-        "records": [(record_state_key(r), record_fingerprint(r)) for r in records],
+        "records": [(record_state_key(r), rejection_fingerprint(r)) for r in records],
         "records_found": loaded.get("records_found"),
         "records_valid": loaded.get("records_valid"),
         "revision_before": loaded.get("revision_before"),
@@ -138,10 +153,12 @@ def build_sync_plan(
         "records_valid": int(loaded.get("records_valid", len(records)) or 0),
         "invalid": invalid,
         "commander_mismatches": mismatches,
-        "skipped": invalid + mismatches,
+        "skipped": invalid + mismatches + len(skipped_reports),
+        "skipped_reports": skipped_reports,
         "new": sum(item["status"] == "New" for item in pending),
         "modified": sum(item["status"] == "Modified" for item in pending),
         "unchanged": unchanged,
+        "accepted_unchanged_keys": accepted_unchanged_keys,
         "pending": pending,
         "current_fingerprints": current,
         "current_depletion_states": current_depletion_states,
@@ -181,7 +198,7 @@ def apply_credential_availability(
     plan["new"] = sum(item["status"] == "New" for item in preview_pending)
     plan["modified"] = sum(item["status"] == "Modified" for item in preview_pending)
     plan["skipped"] = (
-        plan["invalid"] + plan["commander_mismatches"] + missing
+        plan["invalid"] + plan["commander_mismatches"] + len(plan.get("skipped_reports", []))
     )
     plan["snapshot"] = _digest({
         "plan": plan["snapshot"],

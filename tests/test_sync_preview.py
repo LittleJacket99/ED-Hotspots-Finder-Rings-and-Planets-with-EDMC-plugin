@@ -144,7 +144,7 @@ class SharedSyncPlanTests(unittest.TestCase):
         )
         plan = apply_credential_availability(plan, lambda _commander: False)
         self.assertEqual(plan["credential_missing"], 1)
-        self.assertEqual(plan["skipped"], 1)
+        self.assertEqual(plan["skipped"], 0)
         self.assertEqual(plan["preview_pending"], [])
         self.assertNotIn("api_key", plan)
 

@@ -11,7 +11,7 @@ from edmc_plugin.EDHF_Community_Navigator.api_credentials import get_api_key
 
 API_BASE = "https://ed-alliance-community-deposits.littlejacket99.workers.dev"
 DEPOSITS_URL = f"{API_BASE}/v1/deposits"
-USER_AGENT = "ED-Hotspots-Finder-Rings-and-Planets/1.0.4"
+USER_AGENT = "ED-Hotspots-Finder-Rings-and-Planets/1.0.5"
 REQUEST_TIMEOUT = 20
 
 COMMUNITY_HEADERS = [
@@ -20,13 +20,11 @@ COMMUNITY_HEADERS = [
     "Location",
     "Commodity",
     "Rigs",
-    "Amount",
     "Density",
-    "Depleted at",
+    "Status",
     "Latitude",
     "Longitude",
     "Reports",
-    "Updated",
 ]
 
 
@@ -96,6 +94,8 @@ def _normalise_rows(raw_rows, requested_system=None):
         if not isinstance(item, dict):
             continue
 
+        from edmc_plugin.EDHF_Community_Navigator.shared_state import shared_state_display
+        status, reference, source = shared_state_display(item)
         row = {
             "System": _first_value(
                 item,
@@ -115,21 +115,15 @@ def _normalise_rows(raw_rows, requested_system=None):
                 ("commodity", "material"),
             ),
             "Rigs": _first_value(item, ("rigs",)),
-            "Amount": _first_value(item, ("amount",)),
             "Density": _first_value(item, ("density",)),
-            "Depleted at": _format_depleted_at(
-                item.get("depleted_at"),
-            ),
+            "Status": status,
             "Latitude": _first_value(item, ("latitude", "lat")),
             "Longitude": _first_value(item, ("longitude", "lon", "lng")),
             "Reports": _first_value(
                 item,
                 ("report_count", "reports_count", "reports"),
             ),
-            "Updated": _first_value(
-                item,
-                ("updated_at", "last_reported_at", "last_seen_at"),
-            ),
+
         }
         rows.append(row)
 
@@ -137,6 +131,10 @@ def _normalise_rows(raw_rows, requested_system=None):
 
 
 def _validate_payload(response, *, context):
+    if response.status_code == 429:
+        raise CommunityDepositsError("Community Deposits HTTP 429: wait at least 60 seconds before trying again.")
+    if response.status_code == 413:
+        raise CommunityDepositsError("Community Deposits HTTP 413: reduce the payload size before trying again.")
     if response.status_code != 200:
         raise CommunityDepositsError(
             f"Community Deposits API returned HTTP {response.status_code} "
@@ -171,27 +169,29 @@ def _validate_payload(response, *, context):
     return deposits
 
 
+def _read_pages(client, *, api_key, params=None, context, cancel_event=None):
+    from edmc_plugin.EDHF_Community_Navigator.pagination import collect_pages
+    def get_page(query):
+        _check_cancel(cancel_event)
+        try:
+            response = client.get(DEPOSITS_URL, params=query,
+                headers={"User-Agent": USER_AGENT, "Accept": "application/json", "Authorization": f"Bearer {api_key}"},
+                timeout=REQUEST_TIMEOUT)
+        except requests.RequestException:
+            raise CommunityDepositsError("Community Deposits request failed due to a network error.") from None
+        _check_cancel(cancel_event)
+        rows = _validate_payload(response, context=context)
+        return rows, response.json().get("next_cursor")
+    return collect_pages(get_page, params or {}, CommunityDepositsError)
+
+
 def fetch_all_deposits(*, cancel_event=None, commander=None):
     """Fetch every Community Deposit currently exposed by the API."""
 
     _check_cancel(cancel_event)
 
     api_key = _read_api_key(commander)
-    try:
-        response = requests.get(
-            DEPOSITS_URL,
-            headers={"User-Agent": USER_AGENT, "Accept": "application/json",
-                     "Authorization": f"Bearer {api_key}"},
-            timeout=REQUEST_TIMEOUT,
-        )
-    except requests.RequestException:
-        raise CommunityDepositsError(
-            "Community Deposits request failed due to a network error."
-        ) from None
-
-    _check_cancel(cancel_event)
-    deposits = _validate_payload(response, context="all deposits")
-    return _normalise_rows(deposits)
+    return _normalise_rows(_read_pages(requests, api_key=api_key, context="all deposits", cancel_event=cancel_event))
 
 
 def fetch_system_deposits(system, *, session=None, cancel_event=None, commander=None):
@@ -203,21 +203,7 @@ def fetch_system_deposits(system, *, session=None, cancel_event=None, commander=
 
     api_key = _read_api_key(commander)
     client = session or requests.Session()
-    try:
-        response = client.get(
-            DEPOSITS_URL,
-            params={"system": system},
-            headers={"User-Agent": USER_AGENT, "Accept": "application/json",
-                     "Authorization": f"Bearer {api_key}"},
-            timeout=REQUEST_TIMEOUT,
-        )
-    except requests.RequestException:
-        raise CommunityDepositsError(
-            f"Community Deposits request failed for {system} due to a network error."
-        ) from None
-
-    _check_cancel(cancel_event)
-    deposits = _validate_payload(response, context=system)
+    deposits = _read_pages(client, api_key=api_key, params={"system": system}, context=system, cancel_event=cancel_event)
     return _normalise_rows(deposits, requested_system=system)
 
 

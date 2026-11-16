@@ -10,6 +10,7 @@ preserved instead of being overwritten.
 import copy
 import json
 import os
+from finder_distance import normalize_saved_distance
 from pathlib import Path
 
 
@@ -70,6 +71,7 @@ def load_settings():
     # Older v1.0.4 configurations may contain this now-obsolete preference.
     # Ignore it so it can never affect the mandatory Sync Preview flow.
     settings.get("rhinospotter", {}).pop("ask_before_sync", None)
+    settings["startup"]["max_distance_ly"] = normalize_saved_distance(settings["startup"].get("max_distance_ly"))
     return settings
 
 
@@ -78,6 +80,7 @@ def save_settings(settings):
     root = _read_root_config()
     normalized = _merge_defaults(DEFAULT_SETTINGS, settings)
     normalized.get("rhinospotter", {}).pop("ask_before_sync", None)
+    normalized["startup"]["max_distance_ly"] = normalize_saved_distance(normalized["startup"].get("max_distance_ly"))
     root[SETTINGS_KEY] = normalized
 
     temp_path = CONFIG_PATH.with_suffix(".json.tmp")

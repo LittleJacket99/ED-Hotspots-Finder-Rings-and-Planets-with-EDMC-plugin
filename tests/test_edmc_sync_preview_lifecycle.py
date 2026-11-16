@@ -120,10 +120,11 @@ class EdmcSyncPreviewLifecycleTests(unittest.TestCase):
         dialog_window = object()
 
         def show(_parent, _plan, *, apply_theme, position_window,
-                 palette, button_factory):
+                 palette, button_factory, message_factory):
             self.assertIsNotNone(apply_theme)
             self.assertEqual(palette["font_family"], "Segoe UI")
             self.assertIs(button_factory, module.ttk.Button)
+            self.assertIs(message_factory, module.MessageLabel)
             position_window(dialog_window)
             return False
 

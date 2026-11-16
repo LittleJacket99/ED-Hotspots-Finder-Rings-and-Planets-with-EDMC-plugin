@@ -246,9 +246,10 @@ class SyncStateResponseTests(unittest.TestCase):
         patches = self._patches({"status": "ok", "received": 2, "results": []})
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], \
                 patch.object(rhinospotter_sync_service, "save_sync_state_entry") as save:
-            with self.assertRaises(rhinospotter_sync_service.RhinoSpotterSyncError):
-                self._confirmed_sync()
-        save.assert_not_called()
+            result = self._confirmed_sync()
+        self.assertEqual(result["errors"],2)
+        self.assertFalse(save.call_args.args[-1]["complete"])
+        self.assertEqual(save.call_args.args[-1]["fingerprints"],{})
 
     def test_duplicate_outgoing_report_ids_are_rejected_before_network(self):
         self.records[1]["report_id"] = self.records[0]["report_id"]

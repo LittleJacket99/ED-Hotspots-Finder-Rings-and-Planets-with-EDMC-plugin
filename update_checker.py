@@ -19,13 +19,15 @@ LATEST_RELEASE_PAGE = (
 
 
 def _version_tuple(value):
-    """Return a comparable numeric tuple for tags such as v1.0.10."""
+    """Order a beta below its stable release, retaining numeric version order."""
 
     text = str(value or "").strip()
-    match = re.fullmatch(r"v?(\d+)(?:\.(\d+))?(?:\.(\d+))?", text)
+    match = re.fullmatch(r"v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-beta\.([1-9]\d*))?", text)
     if not match:
         return None
-    return tuple(int(part or 0) for part in match.groups())
+    major, minor, patch, beta = match.groups()
+    return (int(major), int(minor or 0), int(patch or 0),
+            1 if beta is None else 0, int(beta or 0))
 
 
 def check_for_update(current_version, timeout=4.0):
@@ -51,7 +53,8 @@ def check_for_update(current_version, timeout=4.0):
         latest_version = str(payload.get("tag_name") or "").strip()
         current_key = _version_tuple(current_version)
         latest_key = _version_tuple(latest_version)
-        if current_key is None or latest_key is None:
+        if (current_key is None or latest_key is None or latest_key[3] != 1
+                or payload.get("prerelease") or payload.get("draft")):
             raise ValueError("GitHub returned an unsupported version tag")
 
         return {

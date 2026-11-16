@@ -10,10 +10,9 @@ request/retry helpers and can be consolidated into the core engine later.
 import math
 
 import finder_engine as engine
+from finder_distance import DEFAULT_MAX_DISTANCE_LY, MAX_ALLOWED_DISTANCE_LY, validate_max_distance
 
 
-DEFAULT_MAX_DISTANCE_LY = 50.0
-MAX_ALLOWED_DISTANCE_LY = 300.0
 SYSTEM_NAME_LOOKUP_URL = "https://spansh.co.uk/api/systems/field_values/system_names"
 FACTION_LOOKUP_URL = (
     "https://spansh.co.uk/api/systems/field_values/"
@@ -27,16 +26,7 @@ def _format_distance(value):
 
 
 def _validate_max_distance(value):
-    try:
-        distance = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("Max Distance (LY) must be a number.") from exc
-
-    if distance <= 0 or distance > MAX_ALLOWED_DISTANCE_LY:
-        raise ValueError(
-            "Max Distance (LY) must be greater than 0 and no more than 300."
-        )
-    return distance
+    return validate_max_distance(value)
 
 
 def _lookup_system_record(system_name, *, cancel_event=None):

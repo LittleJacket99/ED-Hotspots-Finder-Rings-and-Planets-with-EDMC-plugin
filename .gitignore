@@ -8,8 +8,18 @@ build-v8/
 dist-v8/
 build-v1.0.4*/
 dist-v1.0.4*/
+build-v1.0.5-beta.1/
+dist-v1.0.5-beta.1/
+build-v1.0.5/
+dist-v1.0.5/
 *-backup-v1.0.4-*/
 release/
 __pycache__/
 *.py[cod]
 .venv/
+
+# Local diagnostic reports; not release/source-distribution inputs.
+docs/FINDER_GUI_SETTINGS_2026-11-15.md
+docs/FINDER_RESIZE_STABILITY_2026-11-15.md
+docs/RELEASE_v1.0.5_PREPARATION.md
+docs/RELEASE_v1.0.5_BUILD_VERIFICATION.md

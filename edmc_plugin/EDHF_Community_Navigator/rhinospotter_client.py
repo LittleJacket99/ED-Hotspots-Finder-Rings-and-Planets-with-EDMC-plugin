@@ -5,11 +5,12 @@ import os
 import json
 import sys
 from pathlib import Path
+from time import sleep
 from types import ModuleType
 from typing import Any
 
 from .api_credentials import credential_configured, get_api_key
-from .batch_protocol import validate_batch_request, validate_batch_response
+from .batch_protocol import validate_batch_request, validate_batch_response, record_sync_failure, initialize_outcomes, cache_outcomes, transport_failure
 from .sync_state_lock import sync_state_mutex
 from .sync_plan import (
     apply_credential_availability,
@@ -18,7 +19,7 @@ from .sync_plan import (
     record_fingerprint,
     record_state_key,
 )
-from .community_api import chunks, send_deposit_batch
+from .community_api import chunks, send_deposit_batch, BATCH_PAUSE_SECONDS
 
 
 SUPPORTED_SCHEMA = 1
@@ -206,6 +207,9 @@ def _api_record(mark: dict[str, Any]) -> dict[str, Any]:
         "density": mark.get("density"),
         "heading": mark.get("heading"),
         "marked_at": mark.get("marked_at"),
+        "updated_at": mark.get("updated_at"),
+        "system_address": mark.get("system_address"),
+        "body_id": mark.get("body_id"),
     }
     if "depleted_at" in mark:
         record["depleted_at"] = mark["depleted_at"]
@@ -273,6 +277,9 @@ def _normalise_record(record: dict[str, Any]) -> dict[str, Any]:
         "density": _clean_text(record.get("density")),
         "heading": record.get("heading"),
         "marked_at": _clean_text(record.get("marked_at")),
+        "updated_at": _clean_text(record.get("updated_at")),
+        "system_address": record.get("system_address"),
+        "body_id": record.get("body_id"),
     }
 
     if "depleted_at" in record:
@@ -440,7 +447,7 @@ def _execute_sync_plan(path, loaded, state, plan, commander):
             state.get("complete")
             and state.get("revision") == loaded.get("revision")
         ),
-        "records_sent": len(records_to_send),
+        "records_sent": 0,
         "local_unchanged": plan["unchanged"],
         "removed_local": plan["removed_local"],
         "systems": systems,
@@ -453,6 +460,7 @@ def _execute_sync_plan(path, loaded, state, plan, commander):
         "state_saved": False,
     }
 
+    initialize_outcomes(summary, plan)
     changed_systems: set[str] = set()
     successful_keys: set[str] = set()
 
@@ -472,8 +480,11 @@ def _execute_sync_plan(path, loaded, state, plan, commander):
             )
         api_key = get_api_key(commander)
         if not api_key:
-            summary["errors"] += len(records)
+            for record in records:
+                record_sync_failure(summary, str(record["report_id"]), {"error_code":"AUTH_REQUIRED"}, record)
             continue
+        throttled = False
+        attempted_batch = False
         for batch in chunks(records):
             try:
                 validate_batch_request(batch)
@@ -493,16 +504,36 @@ def _execute_sync_plan(path, loaded, state, plan, commander):
                 )
                 for record in batch
             }
-            result = send_deposit_batch(batch, api_key=api_key)
+            if throttled:
+                for record in batch:
+                    record_sync_failure(summary, str(record["report_id"]), {}, record)
+                continue
+            if attempted_batch:
+                sleep(BATCH_PAUSE_SECONDS)
+            attempted_batch = True
+            summary["records_sent"] += len(batch)
+            try:
+                result = send_deposit_batch(batch, api_key=api_key)
+            except (RuntimeError, OSError, ValueError) as exc:
+                throttled = "429" in str(exc)
+                if throttled:
+                    summary["throttled"] = True
+                for record in batch:
+                    record_sync_failure(summary, str(record["report_id"]), transport_failure(exc), record)
+                continue
             try:
                 result_by_report = validate_batch_response(batch, result)
-            except ValueError as exc:
-                raise RhinoSpotterError(str(exc)) from exc
+            except ValueError:
+                # An untrusted/incomplete receipt never advances fingerprints.
+                for record in batch:
+                    record_sync_failure(summary, str(record["report_id"]), {}, record)
+                continue
 
             for report_id, item in result_by_report.items():
                 if not item["ok"]:
-                    summary["errors"] += 1
+                    record_sync_failure(summary, report_id, item, next(record for record in batch if str(record["report_id"]) == report_id))
                     continue
+                summary["synced"] += 1
                 action = item["action"]
                 if action == "inserted":
                     summary["inserted"] += 1
@@ -519,36 +550,14 @@ def _execute_sync_plan(path, loaded, state, plan, commander):
 
     summary["changed_systems"] = sorted(changed_systems, key=str.casefold)
 
-    complete = summary["errors"] == 0 and bool(
+    complete = not summary["pending_reports"] and not loaded["read_errors"] and not plan["commander_mismatches"] and bool(
         loaded.get("revision_stable")
     )
 
     try:
         with sync_state_mutex():
             latest = _get_sync_state_entry(path)
-            latest_fingerprints = latest.get("fingerprints", {})
-            if not isinstance(latest_fingerprints, dict):
-                latest_fingerprints = {}
-            latest_depletion_states = latest.get("depletion_states", {})
-            if not isinstance(latest_depletion_states, dict):
-                latest_depletion_states = {}
-            if summary["errors"] == 0:
-                saved_fingerprints = current_fingerprints
-                saved_depletion_states = {
-                    key: value for key, value in latest_depletion_states.items()
-                    if key in current_fingerprints
-                }
-                saved_depletion_states.update(plan["current_depletion_states"])
-            else:
-                saved_fingerprints = dict(latest_fingerprints)
-                saved_depletion_states = dict(latest_depletion_states)
-                for key in successful_keys:
-                    if key in current_fingerprints:
-                        saved_fingerprints[key] = current_fingerprints[key]
-                        if key in plan["current_depletion_states"]:
-                            saved_depletion_states[key] = plan[
-                                "current_depletion_states"
-                            ][key]
+            saved_fingerprints, saved_depletion_states, saved_rejections = cache_outcomes(latest, plan, successful_keys, summary)
             state_entry = {
                 "complete": complete,
                 "revision": loaded.get("revision") if complete else None,
@@ -559,6 +568,7 @@ def _execute_sync_plan(path, loaded, state, plan, commander):
                 "systems": systems,
                 "fingerprints": saved_fingerprints,
                 "depletion_states": saved_depletion_states,
+                "rejections": saved_rejections,
             }
             _save_sync_state_entry(path, state_entry)
     except OSError as exc:

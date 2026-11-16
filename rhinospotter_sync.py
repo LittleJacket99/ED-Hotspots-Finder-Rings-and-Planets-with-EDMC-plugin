@@ -1,3 +1,4 @@
+from edmc_plugin.EDHF_Community_Navigator.batch_protocol import BatchHTTPError
 import argparse
 import hashlib
 import json
@@ -23,9 +24,9 @@ API_URL = (
     "littlejacket99.workers.dev/v1/deposits/batch"
 )
 
-USER_AGENT = "ED-Hotspots-Finder-Rings-and-Planets/1.0.4"
+USER_AGENT = "ED-Hotspots-Finder-Rings-and-Planets/1.0.5"
 
-MAX_BATCH_SIZE = 200
+MAX_BATCH_SIZE = 5
 
 LOCAL_APP_DATA = Path(
     os.environ.get("LOCALAPPDATA")
@@ -364,6 +365,9 @@ def _api_record(mark):
         "density": mark.get("density"),
         "heading": mark.get("heading"),
         "marked_at": mark.get("marked_at"),
+        "updated_at": mark.get("updated_at"),
+        "system_address": mark.get("system_address"),
+        "body_id": mark.get("body_id"),
     }
     if "depleted_at" in mark:
         record["depleted_at"] = mark["depleted_at"]
@@ -721,8 +725,8 @@ def send_batch(deposits, api_key=None):
             )
 
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(
-            f"Community Deposits API returned HTTP {exc.code}."
+        raise BatchHTTPError(
+            f"Community Deposits API returned HTTP {exc.code}.", status=exc.code
         ) from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise RuntimeError(
@@ -805,12 +809,16 @@ def main():
         print("The source or sync state changed. Review a new preview before syncing.")
         return
 
-    print("Synchronization completed.")
+    from edmc_plugin.EDHF_Community_Navigator.batch_protocol import sync_failure_text
+    partial = bool(result.get("errors") or result.get("state_error"))
+    print("Synchronization partial." if partial else "Synchronization completed.")
     print(f"New deposits: {result.get('inserted', 0)}")
     print(f"Reports matched to existing deposits: {result.get('matched', 0)}")
     print(f"Updated reports: {result.get('updated', 0)}")
     print(f"Unchanged reports: {result.get('unchanged', 0)}")
     print(f"Errors: {result.get('errors', 0)}")
+    if partial:
+        print(sync_failure_text(result))
 
 
 if __name__ == "__main__":

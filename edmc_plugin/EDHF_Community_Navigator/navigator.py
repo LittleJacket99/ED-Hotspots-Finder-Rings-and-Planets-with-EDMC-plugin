@@ -29,6 +29,16 @@ def _float(value: Any) -> float | None:
         return None
 
 
+def _positive_radius(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        radius = _float(value)
+    except OverflowError:
+        return None
+    return radius if radius is not None and math.isfinite(radius) and radius > 0 else None
+
+
 def _same_name(a: Any, b: Any) -> bool:
     if not a or not b:
         return False
@@ -230,9 +240,9 @@ class NavigatorOverlay:
         altitude = _float(status.get("Altitude"))
         target_lat = _float(_first(self.target, "latitude", "lat"))
         target_lon = _float(_first(self.target, "longitude", "lon", "lng"))
-        radius = _float(status.get("PlanetRadius"))
+        radius = _positive_radius(status.get("PlanetRadius"))
         if radius is None:
-            radius = _float(_first(self.target, "planet_radius", "body_radius"))
+            radius = _positive_radius(_first(self.target, "planet_radius", "body_radius"))
 
         if latitude is None or longitude is None:
             if target_body:

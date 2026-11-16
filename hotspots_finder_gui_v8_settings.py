@@ -12,6 +12,7 @@ import app_settings
 import community_deposits
 import rhinospotter_sync_service
 import ui_scale_runtime
+from finder_distance import normalize_saved_distance, validate_max_distance
 from hotspots_finder_gui_v8 import APP_TITLE, COLORS
 
 
@@ -79,6 +80,7 @@ class FinderV8SettingsMixin:
 
         if remember and isinstance(last_filters, dict) and last_filters:
             self._apply_saved_filters(last_filters)
+            self.max_distance_var.set(self._format_distance(normalize_saved_distance(startup.get("max_distance_ly", 50))))
             return
 
         self.hotspots_enabled.set(bool(startup.get("hotspots_enabled", True)))
@@ -87,7 +89,7 @@ class FinderV8SettingsMixin:
             bool(startup.get("community_deposits_enabled", True))
         )
         self.max_distance_var.set(
-            self._format_distance(startup.get("max_distance_ly", 50.0))
+            self._format_distance(normalize_saved_distance(startup.get("max_distance_ly", 50.0)))
         )
 
     def _apply_saved_filters(self, values):
@@ -114,7 +116,7 @@ class FinderV8SettingsMixin:
             str(values.get("reference_system", "") or "")
         )
         self.max_distance_var.set(
-            self._format_distance(values.get("max_distance_ly", 50.0))
+            self._format_distance(normalize_saved_distance(values.get("max_distance_ly", 50.0)))
         )
 
     def _capture_current_filters(self):
@@ -363,13 +365,15 @@ class FinderV8SettingsMixin:
             relief="flat",
             font=("Segoe UI", 9),
         ).place(x=398, y=69, width=40, height=26)
+        tk.Label(startup_panel, text="max 100 Ly", bg=COLORS["panel"], fg=COLORS["muted"],
+                 font=("Segoe UI", 9)).place(x=447, y=73)
 
         tk.Label(
             startup_panel,
             text=(
                 "When Remember last filters is enabled, the latest Hotspots, "
-                "Planets, Community and System Filter selections override these "
-                "startup defaults on the next launch."
+                "Planets, Community and System Filter selections are restored. "
+                "Max Ly starts from the saved default."
             ),
             bg=COLORS["panel"],
             fg=COLORS["muted"],
@@ -445,7 +449,7 @@ class FinderV8SettingsMixin:
         api_key_label = tk.Label(rhino_panel, text="API Key", bg=COLORS["panel"], fg=COLORS["muted"],
                                  font=("Segoe UI", 9))
         api_key_label.place(x=12, y=143)
-        api_key_entry = tk.Entry(rhino_panel, textvariable=api_key_var, bg="#3b3b3b",
+        api_key_entry = tk.Entry(rhino_panel, textvariable=api_key_var, show="*", bg="#3b3b3b",
                                  fg=COLORS["text"], insertbackground=COLORS["text"], relief="flat",
                                  font=("Segoe UI", 9))
         api_key_entry.place(x=82, y=139, width=400, height=25)
@@ -600,13 +604,11 @@ class FinderV8SettingsMixin:
 
         def save_dialog_settings():
             try:
-                max_distance = float(str(max_distance_var.get()).strip())
-                if max_distance <= 0 or max_distance > 300:
-                    raise ValueError
-            except ValueError:
+                max_distance = validate_max_distance(max_distance_var.get())
+            except ValueError as exc:
                 messagebox.showerror(
                     APP_TITLE,
-                    "Default Max LY must be a number between 1 and 300.",
+                    str(exc),
                     parent=window,
                 )
                 return
@@ -621,6 +623,7 @@ class FinderV8SettingsMixin:
             else:
                 stored_rhino_path = entered_rhino_path
 
+            previous_max_distance = normalize_saved_distance(self.v8_settings.get("startup", {}).get("max_distance_ly", 50))
             self.v8_settings["startup"] = {
                 "hotspots_enabled": bool(hotspot_var.get()),
                 "planets_enabled": bool(planets_var.get()),
@@ -639,7 +642,8 @@ class FinderV8SettingsMixin:
             try:
                 from edmc_plugin.EDHF_Community_Navigator.api_credentials import store_api_key
 
-                if api_key_var.get():
+                credentials_changed = bool(api_key_var.get())
+                if credentials_changed:
                     store_api_key(commander, api_key_var.get())
                 app_settings.save_settings(self.v8_settings)
             except (OSError, ValueError) as exc:
@@ -648,8 +652,12 @@ class FinderV8SettingsMixin:
             api_key_var.set("")
 
             self._refresh_runtime_settings()
+            if max_distance != previous_max_distance:
+                self.max_distance_var.set(self._format_distance(max_distance))
             self.status_var.set("Settings saved")
             close_dialog()
+            if credentials_changed and hasattr(self, "_community_credentials_changed"):
+                self._community_credentials_changed(commander)
 
         tk.Button(
             window,

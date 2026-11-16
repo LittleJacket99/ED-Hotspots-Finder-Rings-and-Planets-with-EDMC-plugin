@@ -1,169 +1,39 @@
-# RhinoSpotter integration
+# RhinoSpotter integration — v1.0.5
 
-**ED Hotspots Finder - Rings & Planets** and the **Hotspots Finder EDMC Plugin** integrate with **[RhinoSpotter](https://github.com/Fumlop/EDRhinoSpotter)**, an independent EDMC plugin developed by **Fumlop** for Elite Dangerous surface mining.
+RhinoSpotter is independently developed by **Fumlop**: https://github.com/Fumlop/EDRhinoSpotter. It is not bundled, modified or owned by this project. Install it separately for bookmark synchronization; community browsing/tracking/direct EDMC reporting do not require a bookmark.
 
-RhinoSpotter and this project are separate projects with complementary roles.
+## Sources and timestamps
 
-## What RhinoSpotter does
+EDMC reads the documented `rs_api.py` API (SCHEMA 1). Finder prefers that API and retains read-only SQLite/legacy JSON fallback for older installations. RhinoSpotter 6.6.0 exposes updated_at in bookmarks:
 
-RhinoSpotter helps commanders record planetary surface-mining locations while playing Elite Dangerous.
+- marked_at: original marking time.
+- updated_at: last Edit or Re-mark; None if never edited.
+- Tons mined, Mark depleted and automatic removal of Depleted after 40 days do not necessarily update updated_at.
 
-Compatible bookmarks can include information such as:
+Both mappings/serializers preserve available timestamps, including a space separator and six fractional digits. None is not replaced with a Sync clock. Report identity stays stable; no artificial version or observation time is generated.
 
-- system and body;
-- RhinoSpotter Location;
-- material;
-- Rigs;
-- Amount;
-- Density;
-- latitude and longitude;
-- heading;
-- planet radius and other available body metadata;
-- depletion information.
+## Sync and credentials
 
-ED Hotspots Finder and the EDMC Plugin do not replace RhinoSpotter's in-game recording workflow. They use compatible RhinoSpotter bookmarks as a contribution source for **Community Deposits**.
+Use Finder Settings or EDMC Configure Community API Keys to store a Commander-specific key in Windows Credential Manager. The input is masked. Read permits community catalog access; Write permits bookmark contributions and direct EDMC events. To use both, configure a key with both permissions. The Worker verifies the key and Commander. Switching keys invalidates old cached permissions and responses without restarting.
 
-## Why the integration exists
+Finder uses Upload RhinoSpotter Deposits; EDMC uses Sync Bookmarks. Preview and confirmation remain mandatory. Stable-ID content fingerprints are the change detector; revision() is metadata, not the sole detector. A change only to updated_at does not trigger an upload. Technical completion and genuine content/depletion changes are considered separately.
 
-The purpose of the integration is to help build the shared Community Deposits database.
+Requests contain at most five reports. Readers follow all authenticated pages. Synced means confirmed or previously confirmed unchanged. Skipped means a definite source-version/validation refusal; a real source edit/version can make it eligible again. Pending means a recoverable or uncertain outcome; manually use the same Sync button after fixing credentials, waiting for 429 backoff or restoring connectivity. Partial successes are retained. No automatic resend queue exists.
 
-The intended workflow is:
+Finder and EDMC retain the existing shared sync-state file and named mutex. Existing v1.0.4 configuration/fingerprints are retained; no blanket reset is required. S2 and atomic Worker guards protect concurrent/obsolete writes; the client mutex alone does not guarantee remote ordering after a lost response. Deleting a local bookmark does not delete a shared report.
 
-**RhinoSpotter records a discovery → Finder or EDMC Plugin synchronizes it → Community Deposits makes it searchable**
+## Depletion and shared state
 
-This lets local discoveries made by individual commanders contribute to a larger shared dataset.
+Individual report updates normally need a real increasing updated_at. A strictly newer valid depleted_at can authorize only a depletion change when other effective content/technical fields are unchanged. Retries return unchanged without redundant report UPDATEs. Older restored depletion/recheck dates cannot overwrite a newer known depletion.
 
-## RhinoSpotter 5.1+ external API
+Clearing depletion without a verifiable newer version is not forced. It is Skipped with ACTIVE_TRANSITION_UNVERIFIABLE or STALE_UPDATE; the server state remains protected. RhinoSpotter's automatic 40-day clearing is not a new Active observation. No timestamp is invented to bypass this rule.
 
-Current RhinoSpotter releases expose a documented external API through:
+Shared state is separate from individual snapshots. It uses retained depletion evidence and explicit EDMC Status Report events, preserving legacy baseline and original timestamps. Neither an Edit/Re-mark nor updated_at alone establishes a new shared Active observation. There is no automatic regeneration in Community Deposits. A deliberate direct EDMC Active/Depleted report is recorded at database UTC time after confirmation and can be made without a bookmark.
 
-```text
-%LOCALAPPDATA%\EDMarketConnector\plugins\RhinoSpotter\rs_api.py
-```
+Direct-event retry is separate: Status Report → Retry pending Status Report keeps the original UUID and timestamp through receipt loss/restart. Normal Sync never retries that operation.
 
-The integration uses `rs_api.bookmarks()` and reads `rs_api.revision()` as synchronization metadata. It currently supports RhinoSpotter API `SCHEMA = 1`.
+## Installation and updates
 
-Using the documented API avoids depending on RhinoSpotter's private storage implementation. Compatibility has been verified with RhinoSpotter 5.5.1.
+Install the v1.0.5 stable packages when published; keep the EDHF_Community_Navigator folder name, settings, credential targets, fingerprints and pending files. Stable-channel update checks detect v1.0.5 from v1.0.4. Legacy backend import/uploader tools are unsupported; Finder retains rhinospotter_sync.py and rhinospotter_sync_service.py.
 
-## ED Hotspots Finder behavior
-
-The desktop Finder automatically prefers `rs_api.py` when it is available.
-
-For older RhinoSpotter installations, the Finder retains compatibility fallbacks for:
-
-- the local SQLite bookmark database, opened read-only;
-- legacy JSON card folders.
-
-A custom RhinoSpotter source can be selected in Finder Settings. The Settings status can show the detected source, RhinoSpotter API version when applicable, and bookmark count.
-
-When synchronization is started, compatible bookmarks are validated and prepared before being sent to Community Deposits.
-
-The completion summary reports values such as:
-
-- bookmarks found;
-- valid records;
-- locally unchanged/skipped bookmarks;
-- bookmarks sent;
-- new deposits;
-- reports matched to existing deposits;
-- updated reports;
-- server-unchanged reports;
-- errors.
-
-## EDMC Plugin behavior
-
-The **Hotspots Finder EDMC Plugin** intentionally uses RhinoSpotter 5.1+ `rs_api.py` only.
-
-Use **Sync Bookmarks** inside EDMC to send compatible bookmarks to Community Deposits.
-
-RhinoSpotter is not required for the plugin's Community Deposits lookup or navigation features. If RhinoSpotter is missing or too old, only bookmark synchronization is unavailable.
-
-## Delta synchronization
-
-Finder and EDMC keep a shared local synchronization state at:
-
-```text
-%APPDATA%\HotspotsFinder\rhinospotter_sync_state.json
-```
-
-On the first successful synchronization, compatible bookmarks are sent normally and a fingerprint is saved for each stable RhinoSpotter bookmark ID.
-
-On later synchronizations, the clients still read the local RhinoSpotter bookmarks but compare them locally first. Only bookmarks whose fingerprint is new or different are sent to Community Deposits. Unchanged bookmarks therefore cause no Community Deposits POST and no per-report D1 matching work.
-
-### Community Deposits API credentials
-
-Both clients use the same `Authorization: Bearer <API key>` credential for GET and POST/batch requests. Configure one key with both `can_read=1` and `can_write=1` for a commander in Finder Settings or the EDMC plugin; the key must be provisioned externally. Finder and EDMC store and read it through the same commander-specific Windows Credential Manager target. The key is visible in the UI and is never written to EDMC preferences, Finder JSON settings, logs, sync state, or release artifacts. Finder settings persist only the selected commander name.
-
-The API permits reads across the shared deposit collection. The commander on every submitted bookmark must match the key's commander (case-insensitive after trimming). The Worker remains the authority and rejects a mismatch with HTTP 403.
-
-Batch responses are checked for `status: "ok"`, the exact `received` count, one result per submitted `report_id`, unique IDs, boolean `ok`, and a recognized success `action` (`inserted`, `matched_existing_deposit`, `updated_report`, or `unchanged`). An item with `ok: false` is left eligible for retry. Structurally incomplete or inconsistent responses do not mark records synchronized.
-
-Clients preserve the source field's three depletion states: an absent `depleted_at` stays omitted, explicit JSON `null` stays null, and a timestamp stays a timestamp. The API treats omission on update as “leave depletion unchanged” and explicit null as “clear depletion.” The client does not synthesize null for a missing field.
-
-Finder and EDMC serialize the complete bookmark state read, fingerprint comparison, HTTP upload and state save with the same named Windows mutex. If a process terminates while holding the mutex, Windows marks it abandoned and another client can acquire it and continue. A second sync can wait up to the mutex acquisition timeout before reporting that the shared sync is still in progress.
-
-Abandoning the mutex does not cancel an HTTP request that the client has already sent to the Worker. The Worker may continue processing that request after the client process has terminated. In this scenario, a client-side mutex cannot guarantee the ordering of remote writes: an earlier request may still be processed after another client has acquired the abandoned mutex and sent a later write. Guaranteeing remote write order requires support on the Worker, such as report versions or conditional writes.
-
-`rs_api.revision()` is recorded as useful metadata, but it is not trusted as the sole condition for skipping bookmark reads. The current RhinoSpotter 5.5.1 implementation derives that value from aggregate database values rather than a complete per-row content hash, so a bookmark edit can leave the revision unchanged. Stable-ID fingerprints are therefore the authoritative change detector.
-
-If writing the local sync-state file fails, the server synchronization result is not discarded; a later sync may simply resend records that could not be cached locally. Server-side stable report identity keeps that retry safe.
-
-Deleting a RhinoSpotter bookmark removes it from the local comparison state on the next successful sync, but does not by itself delete an already shared Community Deposits report.
-
-## Stable report identity
-
-The integration generates a stable `report_id` from fields that identify the bookmark/deposit rather than mutable state.
-
-RhinoSpotter's stable bookmark identity is preserved by current clients. Editable values such as **Location**, **Material**, **Rigs**, **Amount**, **Density**, `updated_at` and depletion timestamps do not deliberately create a new report identity when the same bookmark is edited.
-
-This allows the same RhinoSpotter bookmark to update its existing Community Deposits report instead of creating a duplicate.
-
-## Mutable deposit data
-
-Current Community Deposits behavior treats these RhinoSpotter changes as meaningful updates:
-
-- **Location**;
-- **Material**;
-- **Rigs**;
-- **Amount**;
-- **Density**;
-- depletion state.
-
-Re-synchronizing the same values again returns `unchanged` and does not intentionally refresh the visible **Updated** timestamp.
-
-## Location
-
-RhinoSpotter's bookmark `location` value is mapped to Community Deposits `location_index`.
-
-It is displayed as **Location** in both Finder and EDMC Plugin results, and it is also shown in the EDMC navigation HUD.
-
-## Using RhinoSpotter with the Finder
-
-1. Install RhinoSpotter 5.1+ as an EDMC plugin.
-2. Record planetary deposits while playing.
-3. Open ED Hotspots Finder.
-4. Verify the detected RhinoSpotter source in Settings.
-5. Run the synchronization workflow.
-6. Search Community Deposits together with other Finder results.
-
-## Using RhinoSpotter with the EDMC Plugin
-
-1. Install RhinoSpotter 5.1+ and the Hotspots Finder EDMC Plugin.
-2. Record bookmarks normally in RhinoSpotter.
-3. Press **Sync Bookmarks** in Hotspots Finder Deposits Companion.
-4. Use **Scan System** / **Open Deposits** to inspect Community Deposits for the current system.
-5. Select a deposit and press **Start Tracking** when navigation is useful.
-
-## Project credit
-
-RhinoSpotter is developed and maintained independently by **Fumlop**.
-
-Project repository:
-
-**https://github.com/Fumlop/EDRhinoSpotter**
-
-RhinoSpotter is not bundled with this project, and this project does not claim ownership of RhinoSpotter or its code.
-
-## Community Deposits
-
-For more information about the shared database and how contributions are used, see [Community Deposits](COMMUNITY_DEPOSITS.md).
+See [Community Deposits](COMMUNITY_DEPOSITS.md) for catalog/state semantics and [EDMC Companion](EDMC_COMPANION.md) for commands.

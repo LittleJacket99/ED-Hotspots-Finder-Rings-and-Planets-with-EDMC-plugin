@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import community_deposits
 import finder_engine as engine
 import system_filter_search
+from finder_distance import validate_max_distance
 
 
 DISTANCE_HEADER = "Distance (LY)"
@@ -43,16 +44,12 @@ def normalize_config(config):
     max_distance_ly = 50.0
     if reference_system:
         try:
-            max_distance_ly = float(max_distance_raw.replace(",", "."))
+            max_distance_ly = validate_max_distance(max_distance_raw)
         except ValueError as exc:
             raise LocalScanError(
-                "Max Distance (LY) must be a number."
+                str(exc)
             ) from exc
 
-        if max_distance_ly <= 0:
-            raise LocalScanError(
-                "Max Distance (LY) must be greater than 0."
-            )
 
     normalized = {
         "systems": systems,

@@ -6,10 +6,12 @@
 
 
 <p align="center">
-  <a href="https://github.com/LittleJacket99/ED-Hotspots-Finder-Rings-and-Planets-with-EDMC-plugin/releases/latest">Download latest Windows release</a>
+  <a href="https://github.com/LittleJacket99/ED-Hotspots-Finder-Rings-and-Planets-with-EDMC-plugin/releases/tag/v1.0.5">v1.0.5 stable (when published)</a>
   ·
   <a href="RELEASE_NOTES.md">Release notes</a>
 </p>
+
+**v1.0.5 stable:** the Windows EXE and EDMC ZIP have been built, verified and tested in game. GitHub publication is pending. Existing v1.0.4 artifacts remain untouched; stable-channel update checks recognize v1.0.5 once it is published.
 
 This project includes two connected tools for **Elite Dangerous**:
 
@@ -56,6 +58,8 @@ Instead of checking systems one by one across different tools, ED Hotspots Finde
 - Expand or restore the results area and open the detailed activity log.
 - Choose between **Deep Black** and **Green Warm** themes.
 - UI scaling options: 100%, 110%, 115% and 125%.
+- Native window resize/maximize/restore, fixed filter layout and explicit Expand Results.
+- Settings developer credit and GitHub link; the header includes the original transparent Mahon logo.
 
 Spansh and Community Deposits are community-data sources. Missing or outdated data can affect results; no match is not proof that a system or body contains no relevant feature.
 
@@ -86,8 +90,10 @@ It is designed for the actions that are most useful while Elite Dangerous is run
 - **Scan System** for Community Deposits in the current EDMC system;
 - reopen cached results with **Open Deposits** without unnecessary repeat requests;
 - use **Refresh Deposits** when relevant synchronized data changed;
-- view **Body, Location, Material, Rigs, Amount, Density, Depleted at, Latitude, Longitude, Reports and Updated**;
+- view **Body, Location, Material, Rigs, Density, Status, Latitude, Longitude and Reports**;
 - select a deposit and use **Start Tracking** to open the compact navigation HUD;
+- confirm a direct **Status Report** as Active/Depleted, without requiring a RhinoSpotter bookmark;
+- use **▲ ▼** to move the whole plugin section and retain its position after restart;
 - see the target body, material, RhinoSpotter **Location**, relative direction and altitude-aware distance while approaching the deposit;
 - launch the desktop Finder directly with **Open Finder**.
 
@@ -114,6 +120,15 @@ The plugin uses the same Community Deposits backend as the desktop application a
 Documentation: **[Hotspots Finder EDMC Plugin](docs/EDMC_COMPANION.md)** · **[Plugin release notes](docs/COMPANION_RELEASE_NOTES.md)**
 
 ## Community Deposits
+
+Access is restricted to authorized users with a valid API key. **Read** permits browsing/tracking; **Write** permits bookmark sync and direct EDMC Status Reports. Configure the Commander's key in Finder Settings or EDMC's Configure Community API Keys. Inputs are masked and Windows Credential Manager storage is shared; changing the key rechecks cached permissions without restarting.
+
+The **Alliance Community Deposits** filter starts from Settings' Default Max Ly. Changes to the default apply immediately; editing the filter alone does not save that preference. The maximum is **100 Ly**. There is no Load All command; ordinary searches follow authenticated cursor pages.
+
+Sync uses batches of at most **five reports**. **Synced** is confirmed/previously confirmed unchanged, **Skipped** is a definite source/validation refusal, and **Pending** is recoverable or uncertain. Repeat the normal Sync command for recoverable bookmark failures; correct credentials first when indicated. For a lost direct-report receipt use **Status Report → Retry pending Status Report**, preserving the operation UUID across restarts. There is no automatic resend queue.
+
+Community Status is selected independently from individual RhinoSpotter snapshots, using retained valid depletion times and explicit EDMC event times. The historical baseline is preserved. Neither Sync time, updated_at alone nor an Active bookmark automatically establishes shared Active. There is no automatic regeneration. Amount remains stored but hidden; Density/Rigs stay unchanged in v1.0.5.
+
 
 ED Hotspots Finder also includes a community project whose goal is to build a **shared database of planetary surface deposits discovered by Elite Dangerous players**.
 
@@ -152,11 +167,13 @@ Read more: **[RhinoSpotter integration](docs/RHINOSPOTTER.md)**
 
 ## Quick start
 
+To update from v1.0.4, close Finder/EDMC first. Keep the existing EDHF_Community_Navigator folder name and replace its package files rather than installing a second version-named plugin. Preserve settings, Windows credentials, fingerprints and pending state. Install the Finder EXE separately and update Open Finder's configured executable if needed. Never copy smoke profiles or synthetic credentials into the normal installation.
+
 Both downloads are available from the same **GitHub Release**.
 
 **ED Hotspots Finder - Rings & Planets**
 
-1. Download **ED-Hotspots-Finder-Rings-and-Planets-v1.0.4.exe** from **Releases**.
+1. When the stable release is published, download **ED-Hotspots-Finder-Rings-and-Planets-v1.0.5.exe** from the stable release.
 2. Run the executable.
 3. Enter one or more systems in **System Input**, or leave it empty and configure **System Filters**.
 4. Enable **Hotspots**, **Planets** and/or **Community Deposits** as needed.
@@ -167,7 +184,7 @@ Python is not required for the public Windows build.
 
 **Hotspots Finder EDMC Plugin**
 
-1. Download **Hotspots-Finder-EDMC-Plugin-v1.0.4.zip** from the same **Releases** page.
+1. When published, manually download **Hotspots-Finder-EDMC-Plugin-v1.0.5.zip** from the same stable release.
 2. Extract the ZIP into:
 
 ```text
@@ -259,7 +276,7 @@ It stores synchronization metadata and bookmark fingerprints so unchanged bookma
 | --- | --- |
 | A system name is rejected | Check the spelling and whether Spansh can resolve the system. |
 | A scan returns unexpected or incomplete data | Open **Log Details**, verify the active filters and retry with a small system list. |
-| Community Deposits cannot be loaded | Check the Internet connection and retry later; the community API may be temporarily unavailable. |
+| Community Deposits cannot be loaded | Verify the Commander API key and Read permission, then check connectivity or wait as directed by HTTP 429. |
 | RhinoSpotter sync finds no bookmarks | Open Settings and verify that the RhinoSpotter source is detected. RhinoSpotter 5.1+ is read through its documented `%LOCALAPPDATA%\\EDMarketConnector\\plugins\\RhinoSpotter\\rs_api.py`; direct SQLite and legacy JSON access are compatibility fallbacks for older installations only. |
 | The interface is too large or too small | Open **Settings**, change UI Scale, save and restart the app. |
 | Windows SmartScreen appears | The executable is currently unsigned. Confirm that it was downloaded from this repository's Releases page. |
@@ -288,19 +305,21 @@ python -m pip install pyinstaller
 build_windows_v8.bat
 ```
 
-The current internal build files still use **v8** in their filenames because that was the final development iteration before the first public release. Public versioning started at **v1.0.0**; the current release line is **v1.0.4**.
+The internal build files still use **v8** in their filenames because that was the final development iteration before the first public release. Public versioning started at **v1.0.0**; the current release line is **v1.0.5**.
 
-The build uses `HotspotsFinder-v8.spec`, bundles `app.ico` and `ED_Hotspots_Finder.png`, and uses `hotspots_finder_gui_v8_final.py` as the entry point. The GitHub Release publishes the standalone executable with the public version in its filename.
+The build uses `HotspotsFinder-v8.spec`, bundles `app.ico`, `ED_Hotspots_Finder.png` and the original transparent `Mahon_logo.png`, and uses `hotspots_finder_gui_v8_final.py` as the entry point. The GitHub Release publishes the standalone executable with the public version in its filename.
 
-A successful release build creates:
+Verified release artifacts prepared for publication:
 
 ```text
-release\v1.0.4\ED-Hotspots-Finder-Rings-and-Planets-v1.0.4.exe
-release\v1.0.4\Hotspots-Finder-EDMC-Plugin-v1.0.4.zip
-release\v1.0.4\SHA256.txt
+release\v1.0.5\ED-Hotspots-Finder-Rings-and-Planets-v1.0.5.exe
+release\v1.0.5\Hotspots-Finder-EDMC-Plugin-v1.0.5.zip
+release\v1.0.5\SHA256.txt
 ```
 
-`build-v8` and `dist-v8` remain internal intermediate build directories and are not release artifacts.
+`build-v1.0.5` and `dist-v1.0.5` are isolated build intermediates. `release_manifest.json` lists 24 Finder modules, 11 shared modules, 20 EDMC modules and three graphics resources. Packaging excludes tests, smoke fixtures, credentials and personal data. Existing `release/v1.0.4/` files are not overwritten. The displayed version is v1.0.5; Windows numeric metadata is 1.0.5.0, string version is 1.0.5 and the prerelease flag is cleared. Build commands require a later authorized phase.
+
+The backend legacy cartel importer and standalone uploader have been removed; the active Finder RhinoSpotter modules remain required. Backend migration and deploy verification are separate from client packaging.
 
 **Project structure**
 

@@ -17,12 +17,14 @@ LATEST_RELEASE_PAGE = (
 )
 
 
-def _version_tuple(value: Any) -> tuple[int, int, int] | None:
+def _version_tuple(value: Any) -> tuple[int, int, int, int, int] | None:
     text = str(value or "").strip()
-    match = re.fullmatch(r"v?(\d+)(?:\.(\d+))?(?:\.(\d+))?", text)
+    match = re.fullmatch(r"v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-beta\.([1-9]\d*))?", text)
     if not match:
         return None
-    return tuple(int(part or 0) for part in match.groups())
+    major, minor, patch, beta = match.groups()
+    return (int(major), int(minor or 0), int(patch or 0),
+            1 if beta is None else 0, int(beta or 0))
 
 
 def _plugin_version_from_assets(payload: dict[str, Any]) -> str:
@@ -58,6 +60,12 @@ def check_for_update(current_version: str, timeout: float = 4.0) -> dict[str, An
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.load(response)
 
+        # Only stable releases are update candidates, even for beta clients.
+        # Also reject a beta tag accidentally returned with a stable ZIP.
+        release_key = _version_tuple(payload.get("tag_name"))
+        if (payload.get("prerelease") or payload.get("draft")
+                or (release_key is not None and release_key[3] != 1)):
+            raise ValueError("Prereleases are installed manually")
         latest_version = _plugin_version_from_assets(payload)
 
         if not latest_version:

@@ -16,6 +16,7 @@ import tkinter as tk
 import webbrowser
 from pathlib import Path
 from tkinter import messagebox, ttk
+from PIL import Image, ImageTk
 
 import app_settings
 import finder_engine as scan_engine
@@ -34,7 +35,7 @@ from hotspots_finder_gui_v8_ui import FinderV8FinalUIApp as _BaseFinalApp
 
 
 PUBLIC_APP_TITLE = "ED Hotspots Finder - Rings & Planets"
-PUBLIC_APP_VERSION = "v1.0.4"
+PUBLIC_APP_VERSION = "v1.0.5"
 base_gui.APP_TITLE = PUBLIC_APP_TITLE
 community_gui.APP_TITLE = PUBLIC_APP_TITLE
 settings_gui.APP_TITLE = PUBLIC_APP_TITLE
@@ -137,7 +138,7 @@ class FinderV8FinalApp(_BaseFinalApp):
                 bd=0,
                 highlightthickness=0,
             )
-            title_block.place(x=24, y=12, width=390, height=58)
+            title_block.place(x=24, y=12, width=390, height=62)
 
             tk.Label(
                 title_block,
@@ -154,7 +155,9 @@ class FinderV8FinalApp(_BaseFinalApp):
                 bd=0,
                 highlightthickness=0,
             )
-            subtitle_row.pack(anchor="w", fill="x", pady=(2, 0))
+            # Give every subtitle item the same full-height row. Anchoring it
+            # to the block's bottom prevents pack from clipping the image.
+            subtitle_row.place(x=0, rely=1, anchor="sw", relwidth=1, height=26)
             tk.Label(
                 subtitle_row,
                 text="Rings & Planets",
@@ -170,7 +173,7 @@ class FinderV8FinalApp(_BaseFinalApp):
                 fg=theme["muted"],
                 font=("Segoe UI", 8, "bold"),
                 anchor="center",
-            ).pack(side="left", padx=(7, 6), pady=(1, 0))
+            ).pack(side="left", padx=(7, 6))
             tk.Label(
                 subtitle_row,
                 text=PUBLIC_APP_VERSION,
@@ -178,9 +181,28 @@ class FinderV8FinalApp(_BaseFinalApp):
                 fg=theme["muted"],
                 font=("Segoe UI", 8),
                 anchor="w",
-            ).pack(side="left", pady=(1, 0))
+            ).pack(side="left")
+            self._mahon_header_photo = self._load_mahon_header_image()
+            if self._mahon_header_photo is not None:
+                tk.Label(subtitle_row, text="•", bg=theme["header"], fg=theme["muted"],
+                         font=("Segoe UI", 8, "bold"), anchor="center").pack(
+                             side="left", padx=(7, 6))
+                tk.Label(subtitle_row, image=self._mahon_header_photo, bg=theme["header"],
+                         bd=0, highlightthickness=0, padx=0, pady=0).pack(side="left")
         except tk.TclError:
             return
+
+    def _load_mahon_header_image(self):
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        try:
+            with Image.open(base / "Mahon_logo.png") as image:
+                height = max(1, ui_scale_runtime.px(26))
+                width = max(1, round(image.width * height / image.height))
+                resized = image.convert("RGBA").resize((width, height), Image.Resampling.LANCZOS)
+            return ImageTk.PhotoImage(resized, master=self)
+        except (OSError, ValueError, tk.TclError):
+            # A missing resource must not prevent the Finder from starting.
+            return None
 
     def _show_update_available(self, result):
         latest = str(result.get("latest_version") or "").strip()
@@ -249,7 +271,6 @@ class FinderV8FinalApp(_BaseFinalApp):
         self._results_transition_pending = False
         self._responsive_layout_after_id = None
         self._log_reposition_after_id = None
-        self._root_restore_after_id = None
         self._restore_guard_enabled = False
         self._update_check_started = False
         self._update_check_results = queue.SimpleQueue()
@@ -276,9 +297,10 @@ class FinderV8FinalApp(_BaseFinalApp):
             tk._default_root = self
 
         self.title(PUBLIC_APP_TITLE)
-        self.resizable(False, False)
+        self.resizable(True, True)
         self._apply_scaled_root_geometry()
         self._apply_app_icon(self)
+        self._configure_resizable_footer()
 
         current_power = str(self.power_var.get() or "").strip()
         if current_power not in ALLOWED_POWERS:
@@ -293,30 +315,18 @@ class FinderV8FinalApp(_BaseFinalApp):
         finally:
             self._prebuilding_settings_window = False
 
-        # Minimize/restore can expose partially repainted child widgets on
-        # Windows. Keep the root transparent after it is fully unmapped, then
-        # reveal it only after the restored layout has repainted off-screen.
+        # Native Windows transitions retain opacity and restore bounds.
         self.bind("<Unmap>", self._on_root_unmap, add="+")
         self.bind("<Map>", self._on_root_map, add="+")
 
-    def _cancel_root_restore_timer(self):
-        pending = getattr(self, "_root_restore_after_id", None)
-        if pending is None:
-            return
-        try:
-            self.after_cancel(pending)
-        except tk.TclError:
-            pass
-        self._root_restore_after_id = None
 
     def _on_root_unmap(self, event=None):
         if event is not None and event.widget is not self:
             return
         if not getattr(self, "_restore_guard_enabled", False):
             return
-
-        self._cancel_root_restore_timer()
-
+        # Let Windows own minimize/maximize/restore, including opacity and
+        # restore bounds. Cancel only Finder-owned deferred overlay work.
         for attr in ("_responsive_layout_after_id", "_log_reposition_after_id"):
             pending = getattr(self, attr, None)
             if pending is not None:
@@ -325,88 +335,16 @@ class FinderV8FinalApp(_BaseFinalApp):
                 except tk.TclError:
                     pass
                 setattr(self, attr, None)
-
         self._responsive_layout_pending = False
         self._log_reposition_pending = False
-
-        try:
-            # <Unmap> fires once the minimize animation has finished, so this
-            # does not interfere with the animation itself. The next restore
-            # begins with the client area already transparent.
-            self.attributes("-alpha", 0.0)
-        except tk.TclError:
-            pass
 
     def _on_root_map(self, event=None):
         if event is not None and event.widget is not self:
             return
-        if not getattr(self, "_restore_guard_enabled", False):
-            return
+        if getattr(self, "_restore_guard_enabled", False):
+            self._schedule_responsive_layout(event)
 
-        self._cancel_root_restore_timer()
-        try:
-            self.attributes("-alpha", 0.0)
-            self._root_restore_after_id = self.after(
-                70,
-                self._settle_root_after_restore,
-            )
-        except tk.TclError:
-            self._root_restore_after_id = None
 
-    def _settle_root_after_restore(self):
-        self._root_restore_after_id = None
-
-        try:
-            if self.state() != "normal":
-                self._root_restore_after_id = self.after(
-                    30,
-                    self._settle_root_after_restore,
-                )
-                return
-        except tk.TclError:
-            return
-
-        try:
-            self._apply_responsive_layout()
-
-            if not getattr(self, "_results_expanded", False):
-                self._reflow_systems_contents()
-                try:
-                    self._refresh_unified_system_filters_panel()
-                except (AttributeError, tk.TclError):
-                    pass
-
-            try:
-                self._sync_results_outline()
-            except (AttributeError, tk.TclError):
-                pass
-
-            if (
-                getattr(self, "_log_visible", False)
-                and not getattr(self, "_results_expanded", False)
-            ):
-                self._reposition_log_panel()
-
-            # Let Windows/Tk process one more paint turn while the mapped root
-            # is still invisible. This avoids the black/empty panel frames seen
-            # during restore.
-            self.update_idletasks()
-            self._root_restore_after_id = self.after(
-                55,
-                self._reveal_root_after_restore,
-            )
-        except tk.TclError:
-            pass
-
-    def _reveal_root_after_restore(self):
-        self._root_restore_after_id = None
-        try:
-            if self.state() != "normal":
-                return
-            self.update_idletasks()
-            self.attributes("-alpha", 1.0)
-        except tk.TclError:
-            pass
 
     @staticmethod
     def _normalise_ui_scale(value):
@@ -429,9 +367,20 @@ class FinderV8FinalApp(_BaseFinalApp):
             x = max(0, (screen_width - width) // 2)
             y = max(0, (screen_height - height) // 2)
             self.geometry(f"{width}x{height}+{x}+{y}")
-            self.minsize(width, height)
+            # Filters retain their fixed layout down to the shared system
+            # filters at y=742; reserve the original 77px footer area.
+            self.minsize(round(width / 2), height)
         except tk.TclError:
             pass
+
+    def _configure_resizable_footer(self):
+        # Allocate controls before the variable-length status text when narrow.
+        for widget in self._bottom_bar.winfo_children():
+            if isinstance(widget, tk.Label) and str(widget.cget("textvariable")) == str(self.status_var):
+                widget.pack_forget()
+                widget.configure(width=1, anchor="w")
+                widget.pack(side="left", fill="both", expand=True, padx=8)
+                break
 
     def _apply_scaled_ttk_metrics(self):
         style = ttk.Style(self)
@@ -460,116 +409,47 @@ class FinderV8FinalApp(_BaseFinalApp):
             pass
 
     def _schedule_responsive_layout(self, event=None):
-        """Debounce root resize events so minimize/restore animations stay stable."""
-
+        """Coalesce root events; geometry itself is handled natively by place."""
         if event is not None and event.widget is not self:
             return
-
-        pending = getattr(self, "_responsive_layout_after_id", None)
-        if pending is not None:
-            try:
-                self.after_cancel(pending)
-            except tk.TclError:
-                pass
-
+        if getattr(self, "_responsive_layout_after_id", None) is not None:
+            return
         self._responsive_layout_pending = True
         try:
-            self._responsive_layout_after_id = self.after(
-                140,
-                self._run_debounced_responsive_layout,
-            )
+            self._responsive_layout_after_id = self.after_idle(self._run_debounced_responsive_layout)
         except tk.TclError:
-            self._responsive_layout_after_id = None
+            self._responsive_layout_pending = False
 
     def _run_debounced_responsive_layout(self):
         self._responsive_layout_after_id = None
-        try:
-            if self.state() != "normal":
-                self._responsive_layout_pending = False
-                return
-        except tk.TclError:
+        if self.state() not in ("normal", "zoomed"):
+            self._responsive_layout_pending = False
             return
         self._apply_responsive_layout()
 
     def _apply_responsive_layout(self):
         self._responsive_layout_pending = False
-
-        try:
-            width = max(
-                layout_metrics.WINDOW_WIDTH,
-                ui_scale_runtime.logical_px(self.winfo_width()),
-            )
-            height = max(
-                layout_metrics.WINDOW_HEIGHT,
-                ui_scale_runtime.logical_px(self.winfo_height()),
-            )
-        except (TypeError, ValueError, tk.TclError):
-            return
-
-        try:
-            self._stage.place_configure(width=width, height=height)
-        except tk.TclError:
-            pass
-
-        header = getattr(self, "_header_frame", None)
-        if header is not None:
-            try:
-                header.place_configure(width=width)
-            except tk.TclError:
-                pass
-
-        settings_button = getattr(self, "settings_button", None)
-        if settings_button is not None:
-            try:
-                settings_button.place_configure(x=width - 114, y=20)
-            except tk.TclError:
-                pass
-
-        reference_button = getattr(self, "reference_tables_button", None)
-        if reference_button is not None:
-            try:
-                reference_button.place_configure(x=width - 294, y=20)
-            except tk.TclError:
-                pass
-
-        if getattr(self, "_results_expanded", False):
-            results_width = max(
-                1,
-                width
-                - layout_metrics.EXPANDED_LEFT_MARGIN
-                - layout_metrics.RESULTS_RIGHT_MARGIN,
-            )
-            results_height = max(
-                1,
-                height
-                - layout_metrics.LAYOUT["_results_panel"][1]
-                - layout_metrics.EXPANDED_BOTTOM_MARGIN,
-            )
-            self._results_panel.place(
-                x=layout_metrics.EXPANDED_LEFT_MARGIN,
-                y=layout_metrics.LAYOUT["_results_panel"][1],
-                width=results_width,
-                height=results_height,
-            )
-            return
-
-        results_x, results_y, base_width, base_height = layout_metrics.LAYOUT[
-            "_results_panel"
-        ]
-        results_width = max(
-            base_width,
-            width - results_x - layout_metrics.RESULTS_RIGHT_MARGIN,
-        )
-        results_height = max(
-            base_height,
-            height - results_y - layout_metrics.RESULTS_BOTTOM_MARGIN,
-        )
-        self._results_panel.place(
-            x=results_x,
-            y=results_y,
-            width=results_width,
-            height=results_height,
-        )
+        expanded = bool(getattr(self, "_results_expanded", False))
+        if getattr(self, "_native_layout_mode", None) is not expanded:
+            # Fixed filter coordinates remain untouched. Relative place uses
+            # the actual client area immediately, also while maximized.
+            self._stage.place_configure(width=0, height=0, relwidth=1, relheight=1)
+            if self._header_frame is not None:
+                self._header_frame.place_configure(width=0, relwidth=1)
+            self.settings_button.place_configure(relx=1, x=-114, y=20)
+            self.reference_tables_button.place_configure(relx=1, x=-294, y=20)
+            x = layout_metrics.EXPANDED_LEFT_MARGIN if expanded else layout_metrics.LAYOUT["_results_panel"][0]
+            y = layout_metrics.LAYOUT["_results_panel"][1]
+            bottom = layout_metrics.EXPANDED_BOTTOM_MARGIN if expanded else layout_metrics.RESULTS_BOTTOM_MARGIN
+            self._results_panel.place_configure(x=x, y=y, relwidth=1, relheight=1,
+                                                width=-(x + layout_metrics.RESULTS_RIGHT_MARGIN),
+                                                height=-(y + bottom))
+            self._native_layout_mode = expanded
+        # Only the existing action's caption depends on available width.
+        width = ui_scale_runtime.logical_px(self._results_panel.winfo_width())
+        caption = "Restore Panels" if expanded else ("Expand" if width < 260 else "Expand Results")
+        if self.expand_results_button.cget("text") != caption:
+            self.expand_results_button.configure(text=caption)
 
     def _suspend_layout_redraw(self):
         if sys.platform != "win32":
@@ -668,6 +548,8 @@ class FinderV8FinalApp(_BaseFinalApp):
         self.after(30, lambda h=handles: self._finish_results_transition(h))
 
     def _schedule_log_reposition(self, _event=None):
+        if _event is not None and _event.widget is not self:
+            return
         if not getattr(self, "_log_visible", False):
             return
         if getattr(self, "_results_expanded", False):
@@ -692,7 +574,7 @@ class FinderV8FinalApp(_BaseFinalApp):
     def _run_debounced_log_reposition(self):
         self._log_reposition_after_id = None
         try:
-            if self.state() != "normal":
+            if self.state() not in ("normal", "zoomed"):
                 self._log_reposition_pending = False
                 return
         except tk.TclError:
@@ -1203,7 +1085,7 @@ class FinderV8FinalApp(_BaseFinalApp):
                     variable=update_var,
                     state="normal",
                 )
-                update_check.place_configure(x=12, y=100, width=320, height=20)
+                update_check.place_configure(x=12, y=68, width=320, height=20)
 
             self.after_idle(
                 lambda w=window: self._center_settings_window(w, width, height)
@@ -1212,18 +1094,22 @@ class FinderV8FinalApp(_BaseFinalApp):
             pass
 
         theme = visual_theme.THEME
+        tk.Label(application_panel, text="Developed by CMDR LittleJacket",
+                 bg=theme["panel"], fg=theme["muted"], font=("Segoe UI", 8),
+                 anchor="w").place(x=12, y=100, width=220, height=20)
+        tk.Frame(application_panel, bg=theme["line"], bd=0).place(x=12, y=96, width=540, height=1)
         repo_link = tk.Label(
             application_panel,
-            text="GitHub Repository  ↗",
+            text="GitHub Repository",
             bg=theme["panel"],
             fg=theme["accent"],
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 8),
             anchor="w",
             cursor="hand2",
             bd=0,
             highlightthickness=0,
         )
-        repo_link.place(x=372, y=99, width=172, height=22)
+        repo_link.place(x=248, y=100, width=122, height=20)
         repo_link.bind(
             "<Button-1>",
             lambda _event: ui_theme.webbrowser.open_new_tab(

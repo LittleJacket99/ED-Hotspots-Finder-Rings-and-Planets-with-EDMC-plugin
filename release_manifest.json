@@ -1,0 +1,27 @@
+{
+  "version": "1.0.5",
+  "finder_sources": [
+    "app_settings.py", "community_deposits.py", "finder_distance.py", "finder_engine.py",
+    "hotspots_finder_gui_v8.py", "hotspots_finder_gui_v8_columnfilters.py",
+    "hotspots_finder_gui_v8_community.py", "hotspots_finder_gui_v8_expandresults.py",
+    "hotspots_finder_gui_v8_final.py", "hotspots_finder_gui_v8_layout2.py",
+    "hotspots_finder_gui_v8_loglayout.py", "hotspots_finder_gui_v8_polish.py",
+    "hotspots_finder_gui_v8_settings.py", "hotspots_finder_gui_v8_ui.py",
+    "hotspots_finder_gui_v8_visual.py", "local_scan.py", "results_export.py",
+    "rhinospotter_sync.py", "rhinospotter_sync_service.py", "startup_splash.py",
+    "system_filter_search.py", "ui_logo.py", "ui_scale_runtime.py", "update_checker.py"
+  ],
+  "finder_shared_sources": [
+    "api_credentials.py", "batch_protocol.py", "community_api.py", "dialog_layout.py",
+    "edmc_sync_dialog.py", "message_label.py", "pagination.py", "shared_state.py",
+    "sync_plan.py", "sync_preview_dialog.py", "sync_state_lock.py"
+  ],
+  "plugin_sources": [
+    "__init__.py", "api_credentials.py", "batch_protocol.py", "community_api.py",
+    "dialog_layout.py", "edmc_sync_dialog.py", "load.py", "message_label.py",
+    "navigator.py", "pagination.py", "results_window.py", "rhinospotter_client.py",
+    "section_order.py", "shared_state.py", "status_report_dialog.py", "status_reports.py",
+    "sync_plan.py", "sync_preview_dialog.py", "sync_state_lock.py", "update_checker.py"
+  ],
+  "resources": ["app.ico", "ED_Hotspots_Finder.png", "Mahon_logo.png"]
+}

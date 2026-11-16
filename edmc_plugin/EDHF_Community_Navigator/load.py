@@ -24,9 +24,12 @@ from EDHF_Community_Navigator.rhinospotter_client import (
     preview_sync,
 )
 from EDHF_Community_Navigator.sync_preview_dialog import show_sync_preview
+from EDHF_Community_Navigator.message_label import MessageLabel
+from EDHF_Community_Navigator.dialog_layout import DialogBody
+from EDHF_Community_Navigator.section_order import SectionOrder, attach_tooltip
 
 
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 PLUGIN_NAME = "Hotspots Finder Deposits Companion"
 WORKER_EVENT = "<<EDHFCommunityNavigatorWorker>>"
 NAV_X_KEY = "edhf_community_navigator_x"
@@ -58,6 +61,11 @@ _deposits_cache_stale = False
 _worker_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
 _stopping = False
 _update_check_started = False
+_status_report_inflight = None
+_commander_generation = 0
+_cached_status_report_allowed = False
+_section_order = None
+_ui_busy = False
 
 
 def plugin_start3(plugin_dir: str) -> str:
@@ -68,7 +76,7 @@ def plugin_start3(plugin_dir: str) -> str:
 
 
 def plugin_app(parent: tk.Frame) -> tk.Frame:
-    global _frame, _status, _sync_button, _scan_button, _open_button, _navigator
+    global _frame, _status, _sync_button, _scan_button, _open_button, _navigator, _section_order
 
     frame = tk.Frame(parent)
     _frame = frame
@@ -91,13 +99,34 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
         on_position_changed=_save_navigator_position,
     )
 
+    heading_row = tk.Frame(frame)
+    heading_row.grid(row=0, column=0, columnspan=3, sticky=tk.EW, pady=(0, 3))
+    heading_row.columnconfigure(0, weight=1)
     heading = tk.Label(
-        frame,
-        text="Hotspots Finder Deposits Companion",
+        heading_row,
+        text="Alliance Community Deposits",
         font=("TkDefaultFont", 9, "bold"),
         anchor="w",
     )
-    heading.grid(row=0, column=0, columnspan=3, sticky=tk.W, pady=(0, 3))
+    heading.grid(row=0, column=0, sticky=tk.W)
+    controls = tk.Frame(heading_row)
+    controls.grid(row=0, column=1, sticky=tk.E)
+    _section_order = SectionOrder(frame, config,
+                                  is_busy=lambda: _ui_busy or _status_report_inflight is not None or _stopping)
+    arrows = []
+    for column, (glyph, step, tooltip) in enumerate((("▲", -1, "Move up"), ("▼", 1, "Move down"))):
+        arrow = tk.Label(controls, text=glyph, width=1, padx=1, pady=0, borderwidth=0,
+                         font=("TkDefaultFont", 8), takefocus=True)
+        arrow.grid(row=0, column=column, padx=(0, 1 if column == 0 else 0))
+
+        def move(_event=None, direction=step):
+            _section_order.move(direction)
+        theme.button_bind(arrow, move)
+        arrow.bind("<Return>", move)
+        arrow.bind("<space>", move)
+        attach_tooltip(arrow, tooltip)
+        arrows.append(arrow)
+    _section_order.attach(*arrows)
 
     _sync_button = _make_action_button(
         frame,
@@ -120,7 +149,7 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
     )
     _open_button.grid(row=1, column=2, sticky=tk.EW, padx=(3, 0))
 
-    _status = tk.Label(
+    _status = MessageLabel(
         frame,
         text="Ready",
         anchor="w",
@@ -250,6 +279,8 @@ def _set_current_system(system: str | None) -> None:
 def plugin_stop() -> None:
     global _stopping
     _stopping = True
+    if _section_order is not None:
+        _section_order.close()
 
     if _navigator is not None:
         _navigator.destroy()
@@ -275,7 +306,7 @@ def journal_entry(
     global _current_body, _current_commander
 
     if cmdr:
-        _current_commander = str(cmdr).strip()
+        _set_report_commander(str(cmdr).strip())
 
     event = entry.get("event")
 
@@ -310,7 +341,7 @@ def dashboard_entry(
     global _current_body, _current_commander, _last_dashboard_status
 
     if cmdr:
-        _current_commander = str(cmdr).strip()
+        _set_report_commander(str(cmdr).strip())
 
     _last_dashboard_status = dict(entry)
 
@@ -325,7 +356,134 @@ def dashboard_entry(
         )
 
 
+def _status_commander_key(commander):
+    from EDHF_Community_Navigator.community_api import commander_identity
+    return commander_identity(commander)
+
+
+def _set_report_commander(commander):
+    global _current_commander, _commander_generation, _cached_deposits, _cached_system, _cached_status_report_allowed
+    if _status_commander_key(_current_commander) != _status_commander_key(commander):
+        _commander_generation += 1
+        _close_results_window()
+        _cached_deposits = None
+        _cached_system = None
+        _cached_status_report_allowed = False
+    _current_commander = commander
+
+
+def _has_pending_status_report():
+    if not _current_commander:
+        return False
+    from EDHF_Community_Navigator.status_reports import load_pending
+    try:
+        return load_pending(_current_commander) is not None
+    except Exception:
+        # Open the window to show the storage error, without enabling a send.
+        return True
+
+
+def _status_report_available(commander, generation):
+    from EDHF_Community_Navigator.api_credentials import get_api_key
+    return (generation == _commander_generation and _status_commander_key(commander) == _status_commander_key(_current_commander)
+            and _status_report_inflight is None and _cached_status_report_allowed and bool(get_api_key(commander)))
+
+
+def _start_status_report(commander, generation, record=None, state=None):
+    global _status_report_inflight
+    from EDHF_Community_Navigator.status_reports import load_pending, prepare_operation
+    if not _status_report_available(commander, generation):
+        return
+    try:
+        pending = load_pending(commander)
+        if record is not None:
+            if pending or record.get("_can_report_state") is not True:
+                raise RuntimeError("A report is pending or Write permission is unavailable.")
+            pending = prepare_operation(commander, record.get("id"), state)
+        if pending is None:
+            return
+    except Exception:
+        if _results_window:
+            _results_window.report_message.configure(text="Cannot prepare status report. Check the pending operation and credentials.")
+        return
+    _status_report_inflight = (commander, generation)
+    if globals().get("_section_order") is not None:
+        _section_order.refresh()
+    if _results_window:
+        _results_window.pending = pending
+        _results_window.report_busy = True
+        _results_window.report_message.configure(text=f"Sending {pending['state'].title()} report for deposit {pending['deposit_id']}…")
+        _results_window.refresh_report_controls()
+    threading.Thread(target=_status_report_worker, args=(commander, generation),
+                     name="EDHF-Status-Report", daemon=True).start()
+
+
+def _status_report_worker(commander, generation):
+    from EDHF_Community_Navigator.status_reports import submit_pending, StatusReportError
+    try:
+        event = submit_pending(commander)
+    except StatusReportError as exc:
+        _post_worker_result("status_report", (commander, generation, None, str(exc), exc.status))
+    except Exception:
+        _post_worker_result("status_report", (commander, generation, None,
+            "Status report outcome not confirmed. Check the pending operation before retrying.", None))
+    else:
+        _post_worker_result("status_report", (commander, generation, event, None, None))
+
+
+def _handle_status_report_result(payload):
+    global _status_report_inflight, _cached_status_report_allowed
+    commander, generation, event, error, status = payload
+    if _status_report_inflight == (commander, generation):
+        _status_report_inflight = None
+    if globals().get("_section_order") is not None:
+        _section_order.refresh()
+    if generation != _commander_generation or _status_commander_key(commander) != _status_commander_key(_current_commander):
+        # Release availability, without applying the old session's data/message.
+        if _results_window is not None and _status_report_inflight is None:
+            _results_window.report_busy = False
+            from EDHF_Community_Navigator.status_reports import load_pending
+            try:
+                _results_window.pending = load_pending(_current_commander)
+            except Exception:
+                _results_window.report_busy = True
+            _results_window.refresh_report_controls()
+        return
+    from EDHF_Community_Navigator.status_reports import load_pending, pending_report_message
+    if event and _cached_deposits is not None:
+        for record in _cached_deposits:
+            if record.get("id") == event["deposit_id"]:
+                previous = record.get("latest_direct_state_event") or {}
+                if previous.get("id", 0) < event["id"]:
+                    record["latest_direct_state_event"] = {k: event[k] for k in ("id", "state", "commander", "recorded_at")}
+                if isinstance(event.get("shared_state"), dict):
+                    record["shared_state"] = event["shared_state"]
+    if _results_window is not None:
+        try:
+            _results_window.pending = load_pending(commander)
+        except Exception:
+            _results_window.report_message.configure(text="Cannot read pending status report. No new report will be sent.")
+            _results_window.report_busy = True
+            _results_window.refresh_report_controls()
+            return
+        _results_window.report_busy = False
+        if status == 403:
+            _cached_status_report_allowed = False
+            for record in _results_window.records:
+                record["_can_report_state"] = False
+        if error and _results_window.pending:
+            message = pending_report_message(status, error)
+        else:
+            message = error or f"Status report recorded: {event['state'].title()} — deposit {event['deposit_id']}."
+        _results_window.report_message.configure(text=message)
+        _results_window.refresh_report_controls()
+
+
 def _set_busy(busy: bool, text: str) -> None:
+    global _ui_busy
+    _ui_busy = busy
+    if globals().get("_section_order") is not None:
+        _section_order.refresh()
     state = tk.DISABLED if busy else tk.NORMAL
     if _sync_button is not None:
         _sync_button.config(state=state)
@@ -451,6 +609,25 @@ def _start_sync() -> None:
     ).start()
 
 
+def _credentials_changed(commander):
+    """Fail closed immediately, then verify through the authenticated catalog GET."""
+    global _commander_generation, _cached_status_report_allowed, _cached_deposits, _cached_system, _deposits_cache_stale
+    _commander_generation += 1
+    generation = _commander_generation
+    _cached_status_report_allowed = False
+    _cached_deposits = None
+    _cached_system = None
+    _deposits_cache_stale = True
+    if _results_window is not None:
+        for record in _results_window.records:
+            record["_can_report_state"] = False
+        _results_window.report_message.configure(text="Verifying the new API Key…")
+        _results_window.refresh_report_controls()
+    _set_busy(True, "Verifying the new API Key…")
+    threading.Thread(target=_scan_worker, args=(_current_system or "", commander, generation),
+                     name="EDHF-Credential-Check", daemon=True).start()
+
+
 def _open_credentials_dialog() -> None:
     global _credentials_window
 
@@ -479,34 +656,38 @@ def _open_credentials_dialog() -> None:
     window.title("Community Deposits API Key")
     window.resizable(False, False)
     window.transient(parent)
-    tk.Label(window, text=f"Commander: {commander}", anchor="w").grid(
+    layout = DialogBody(window, background=window.cget("background"))
+    content = layout.content
+    content.columnconfigure(1, weight=1)
+    MessageLabel(content, text=f"Commander: {commander}", anchor="w").grid(
         row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(12, 6)
     )
-    tk.Label(window, text="API Key").grid(row=1, column=0, sticky="w", padx=12, pady=4)
-    api_key_entry = tk.Entry(window, width=42)
-    api_key_entry.grid(row=1, column=1, padx=12, pady=4)
-    tk.Label(
-        window,
+    tk.Label(content, text="API Key").grid(row=1, column=0, sticky="w", padx=12, pady=4)
+    api_key_entry = tk.Entry(content, width=42, show="*")
+    api_key_entry.grid(row=1, column=1, sticky="ew", padx=12, pady=4)
+    MessageLabel(
+        content,
         text=("Use a key with can_read=1 and can_write=1. Leave blank to keep "
               "the saved key. It is stored in shared Windows Credential Manager."),
-        wraplength=390,
         justify="left",
-    ).grid(row=3, column=0, columnspan=2, sticky="w", padx=12, pady=6)
+    ).grid(row=3, column=0, columnspan=2, sticky="ew", padx=12, pady=6)
 
     def save_key() -> None:
+        changed = bool(api_key_entry.get())
         try:
-            if api_key_entry.get():
+            if changed:
                 store_api_key(commander, api_key_entry.get())
         except (OSError, ValueError) as exc:
             messagebox.showerror(PLUGIN_NAME, str(exc), parent=window)
             return
         api_key_entry.delete(0, tk.END)
         window.destroy()
+        if changed:
+            _credentials_changed(commander)
 
-    tk.Button(window, text="Save API Key", command=save_key).grid(
-        row=4, column=1, sticky="e", padx=12, pady=(4, 12)
-    )
+    tk.Button(layout.footer, text="Save API Key", command=save_key).pack(side="right")
 
+    layout.fit(parent)
     _center_credentials_window(window, parent)
     window.deiconify()
     window.update_idletasks()
@@ -587,7 +768,7 @@ def _start_scan() -> None:
     )
 
     if cache_matches and not _deposits_cache_stale:
-        if _cached_deposits:
+        if _cached_deposits or _has_pending_status_report():
             _show_deposits_window(system, _cached_deposits)
             if _status is not None:
                 _status.config(
@@ -602,7 +783,7 @@ def _start_scan() -> None:
     _set_busy(True, f"{action} {system}…")
     threading.Thread(
         target=_scan_worker,
-        args=(system, _current_commander),
+        args=(system, _current_commander, _commander_generation),
         name="EDHF-Community-Scan",
         daemon=True,
     ).start()
@@ -636,14 +817,14 @@ def _sync_worker(commander: str, expected_snapshot: str) -> None:
             _post_worker_result("sync_ok", summary)
 
 
-def _scan_worker(system: str, commander: str) -> None:
+def _scan_worker(system: str, commander: str, generation: int) -> None:
     try:
-        records = fetch_system_deposits(system, commander=commander)
+        records = fetch_system_deposits(system or "__credential_check__", commander=commander)
     except Exception as exc:
         logger.exception("Community Deposits scan failed")
-        _post_worker_result("scan_error", (system, str(exc)))
+        _post_worker_result("scan_error", (system, commander, generation, str(exc)))
     else:
-        _post_worker_result("scan_ok", (system, records))
+        _post_worker_result("scan_ok", (system, commander, generation, records))
 
 
 def _post_worker_result(kind: str, payload: Any) -> None:
@@ -665,7 +846,9 @@ def _handle_worker_event(_event: tk.Event | None = None) -> None:
         except queue.Empty:
             break
 
-        if kind == "sync_ok":
+        if kind == "status_report":
+            _handle_status_report_result(payload)
+        elif kind == "sync_ok":
             _handle_sync_ok(payload)
         elif kind in {"sync_preview", "sync_stale"}:
             _handle_sync_preview(payload)
@@ -674,11 +857,16 @@ def _handle_worker_event(_event: tk.Event | None = None) -> None:
         elif kind == "sync_error":
             _set_busy(False, f"Sync failed: {payload}")
         elif kind == "scan_ok":
-            system, records = payload
-            _handle_scan_ok(system, records)
+            system, commander, generation, records = payload
+            if generation == _commander_generation and _status_commander_key(commander) == _status_commander_key(_current_commander):
+                _handle_scan_ok(system, records)
         elif kind == "scan_error":
-            system, message = payload
-            _set_busy(False, f"{system}: scan failed — {message}")
+            system, commander, generation, message = payload
+            if generation == _commander_generation and _status_commander_key(commander) == _status_commander_key(_current_commander):
+                _set_busy(False, f"{system}: scan failed — {message}")
+                if _results_window is not None:
+                    _results_window.report_message.configure(text="API Key could not be verified. Check credentials or connection.")
+                    _results_window.refresh_report_controls()
         elif kind == "update_check":
             _handle_update_check(payload)
 
@@ -708,6 +896,7 @@ def _handle_sync_preview(payload) -> None:
             palette=theme_colours(),
             apply_theme=theme.update,
             button_factory=ttk.Button,
+            message_factory=MessageLabel,
             position_window=lambda window: _center_credentials_window(window, parent),
         )
     except Exception:
@@ -763,27 +952,17 @@ def _handle_sync_ok(summary: dict[str, Any]) -> None:
     ):
         _deposits_cache_stale = True
 
-    if sent == 0:
-        text = (
-            f"Sync: {found} bookmarks · "
-            "no new or modified bookmarks"
-        )
-    else:
-        text = (
-            f"Sync: {found} bookmarks · {sent} sent · "
-            f"{inserted} new · {matched} matched · "
-            f"{updated} updated · {unchanged} server-unchanged"
-        )
-
-    if errors:
-        text += f" · {errors} errors"
-
-    _set_busy(False, text)
+    from .message_label import sync_message
+    _set_busy(False, sync_message(summary))
 
 
 def _handle_scan_ok(system: str, records: list[dict[str, Any]]) -> None:
-    global _cached_system, _cached_deposits, _deposits_cache_stale
+    global _cached_system, _cached_deposits, _deposits_cache_stale, _cached_status_report_allowed
 
+    if not system and not _current_system:
+        _cached_status_report_allowed = bool(getattr(records, "can_report_state", False))
+        _set_busy(False, "API Key verified")
+        return
     # Ignore a late worker result if the commander changed system meanwhile.
     if not _same_system(system, _current_system):
         _set_busy(False, f"{_current_system or 'Current system'}: ready")
@@ -791,6 +970,7 @@ def _handle_scan_ok(system: str, records: list[dict[str, Any]]) -> None:
 
     _cached_system = system
     _cached_deposits = list(records)
+    _cached_status_report_allowed = bool(getattr(records, "can_report_state", False))
     _deposits_cache_stale = False
 
     _set_busy(False, f"{system}: {len(records)} community deposits")
@@ -799,7 +979,7 @@ def _handle_scan_ok(system: str, records: list[dict[str, Any]]) -> None:
     # bringing an older already-open table back to the front.
     _close_results_window()
 
-    if records:
+    if records or _has_pending_status_report():
         _show_deposits_window(system, records)
 
 
@@ -824,12 +1004,32 @@ def _show_deposits_window(
     except tk.TclError:
         _results_window = None
 
+    commander = (_current_commander or "").strip()
+    generation = _commander_generation
+    from EDHF_Community_Navigator.status_reports import load_pending, pending_report_message
+    pending_error = False
+    try:
+        pending = load_pending(commander) if commander else None
+    except Exception:
+        pending = None
+        pending_error = True
+
     _results_window = DepositsWindow(
         _frame,
         system=system,
         records=records,
         on_track=lambda record: _track_record(record, system),
+        on_report=lambda record, state: _start_status_report(commander, generation, record, state),
+        on_retry=lambda: _start_status_report(commander, generation),
+        pending=pending,
+        report_available=lambda: not pending_error and _status_report_available(commander, generation),
     )
+    if pending_error:
+        _results_window.report_message.configure(text="Cannot read pending status report. No new report will be sent.")
+    elif pending:
+        _results_window.report_message.configure(text=pending_report_message())
+    _results_window.refresh_report_controls()
+
 
 def _track_record(record: dict[str, Any], system: str) -> None:
     if _navigator is None:

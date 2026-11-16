@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PluginSource = Join-Path $RepoRoot "edmc_plugin\EDHF_Community_Navigator"
 $LoadPy = Join-Path $PluginSource "load.py"
+$Manifest = Get-Content -LiteralPath (Join-Path $RepoRoot "release_manifest.json") -Raw | ConvertFrom-Json
 
 if (-not (Test-Path $LoadPy)) {
     throw "Companion load.py not found: $LoadPy"
@@ -21,32 +22,32 @@ if (-not $Version) {
     $Version = $match.Matches[0].Groups[1].Value
 }
 
+$SourceVersionMatch = Select-String -LiteralPath $LoadPy -Pattern '^VERSION\s*=\s*"([^"]+)"$' | Select-Object -First 1
+if (-not $SourceVersionMatch -or $SourceVersionMatch.Matches[0].Groups[1].Value -ne $Manifest.version -or $Version -ne $Manifest.version) {
+    throw "Plugin, release manifest and requested version must match."
+}
+if ($Version -ne "1.0.5") {
+    throw "This packaging configuration is reserved for 1.0.5."
+}
+foreach ($Name in $Manifest.plugin_sources) {
+    if ([IO.Path]::GetFileName($Name) -ne $Name -or -not (Test-Path -LiteralPath (Join-Path $PluginSource $Name) -PathType Leaf)) {
+        throw "Invalid or missing plugin source: $Name"
+    }
+}
+
 $ReleaseDir = Join-Path $RepoRoot "release\v$Version"
-$StageRoot = Join-Path $env:TEMP "Hotspots-Finder-EDMC-Plugin-$Version"
+$StageRoot = Join-Path ([IO.Path]::GetTempPath()) ("Hotspots-Finder-EDMC-Plugin-$Version-" + [guid]::NewGuid().ToString("N"))
 $StagePlugin = Join-Path $StageRoot "EDHF_Community_Navigator"
 $ZipPath = Join-Path $ReleaseDir "Hotspots-Finder-EDMC-Plugin-v$Version.zip"
 $HashPath = Join-Path $ReleaseDir "SHA256.txt"
 
-if (Test-Path $StageRoot) {
-    Remove-Item $StageRoot -Recurse -Force
-}
-
 New-Item -ItemType Directory -Path $StagePlugin -Force | Out-Null
 New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
 
-if (Test-Path $ZipPath) {
-    Remove-Item $ZipPath -Force
+foreach ($Name in @($Manifest.plugin_sources) + @("README.md")) {
+    Copy-Item -LiteralPath (Join-Path $PluginSource $Name) -Destination $StagePlugin
 }
-
-$legacyZip = Join-Path $ReleaseDir "Hotspots-Finder-Deposits-Companion-v$Version.zip"
-if (Test-Path $legacyZip) {
-    Remove-Item $legacyZip -Force
-}
-
-Copy-Item (Join-Path $PluginSource "*") $StagePlugin -Recurse -Force
-
-Get-ChildItem $StagePlugin -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
-Get-ChildItem $StagePlugin -Recurse -File -Include "*.pyc","*.pyo" | Remove-Item -Force
+Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSE") -Destination $StagePlugin
 
 Compress-Archive -Path $StagePlugin -DestinationPath $ZipPath -CompressionLevel Optimal -Force
 
@@ -58,11 +59,22 @@ if (Test-Path $HashPath) {
             Where-Object { $_ -notmatch ("  " + [regex]::Escape($name) + "$") }
     )
 }
-$hash = Get-FileHash $ZipPath -Algorithm SHA256
-$lines += "$($hash.Hash.ToLowerInvariant())  $name"
+$sha = [Security.Cryptography.SHA256]::Create()
+try {
+    $hash = [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($ZipPath))).Replace('-', '').ToLowerInvariant()
+} finally {
+    $sha.Dispose()
+}
+$lines += "$hash  $name"
 $lines | Set-Content -Path $HashPath -Encoding ascii
 
-Remove-Item $StageRoot -Recurse -Force
+$ResolvedStage = [IO.Path]::GetFullPath($StageRoot)
+$ExpectedStageParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+if (-not $ResolvedStage.StartsWith($ExpectedStageParent, [StringComparison]::OrdinalIgnoreCase) -or
+    [IO.Path]::GetFileName($ResolvedStage) -notlike "Hotspots-Finder-EDMC-Plugin-1.0.5-*") {
+    throw "Unexpected package staging path; cleanup refused."
+}
+Remove-Item -LiteralPath $ResolvedStage -Recurse -Force
 
 Write-Host ""
 Write-Host "Hotspots Finder EDMC Plugin v$Version"

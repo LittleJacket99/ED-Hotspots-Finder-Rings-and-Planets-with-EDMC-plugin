@@ -53,8 +53,8 @@ class BatchProtocolTests(unittest.TestCase):
         self.assertEqual(result["a"]["action"], "inserted")
 
     def test_accepts_batch_limit_and_rejects_over_limit_by_chunking(self):
-        self.assertEqual(len(list(community_api.chunks([{}] * 200))), 1)
-        self.assertEqual([len(x) for x in community_api.chunks([{}] * 201)], [200, 1])
+        self.assertEqual(len(list(community_api.chunks([{}] * 200))), 40)
+        self.assertEqual([len(x) for x in community_api.chunks([{}] * 201)], [5] * 40 + [1])
         self.assertEqual([len(x) for x in rhinospotter_sync.chunks([{}] * 201, 200)], [200, 1])
 
     def test_invalid_top_level_response_shapes_are_rejected(self):

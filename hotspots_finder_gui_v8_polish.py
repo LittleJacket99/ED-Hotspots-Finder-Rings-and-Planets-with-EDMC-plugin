@@ -318,7 +318,7 @@ class FinderV8PolishApp(FinderV8LogLayoutApp):
             )
 
     def _build_community_box(self, parent):
-        self._section_label(parent, "COMMUNITY DEPOSITS")
+        self._section_label(parent, "Alliance Community Deposits")
         self._place_check(
             parent,
             "Enable Community Deposits",

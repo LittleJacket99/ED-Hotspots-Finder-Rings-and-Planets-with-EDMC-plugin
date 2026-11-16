@@ -478,62 +478,32 @@ class FinderV8CommunityApp(FinderV8App):
                 community_rows,
             )
 
-        records_sent = int(summary.get("records_sent", 0) or 0)
-        errors = int(summary.get("errors", 0) or 0)
+        from edmc_plugin.EDHF_Community_Navigator.batch_protocol import outcome_summary, sync_failure_text
+        text = outcome_summary(summary)
+        detail = sync_failure_text(summary, retry_command="Upload RhinoSpotter Deposits")
+        incomplete = bool(summary.get("errors") or summary.get("skipped") or summary.get("pending_reports") or summary.get("state_error"))
+        self._finish_rhino_upload(text)
+        notify = messagebox.showwarning if incomplete else messagebox.showinfo
+        notify(APP_TITLE, text + ("\n\n" + detail if detail else ""), parent=self)
 
-        if records_sent == 0 and errors:
-            self._finish_rhino_upload("RhinoSpotter upload incomplete")
-        elif records_sent == 0:
-            self._finish_rhino_upload(
-                "No new or modified RhinoSpotter bookmarks"
-            )
-        else:
-            self._finish_rhino_upload("RhinoSpotter upload completed")
-
-        source_type = summary.get("source_type")
-        if source_type == "rs_api":
-            version = str(summary.get("api_version") or "").strip()
-            source_label = (
-                f"RhinoSpotter API {version}" if version else "RhinoSpotter API"
-            )
-        elif source_type == "sqlite":
-            source_label = "SQLite database"
-        else:
-            source_label = "Legacy JSON cards"
-        if records_sent == 0 and errors:
-            detail = (
-                "No bookmarks were uploaded because one or more records could "
-                "not be synchronized. Review the errors and configured API key."
-            )
-        elif records_sent == 0:
-            detail = (
-                "No new or modified bookmarks required an upload.\n"
-                "Nothing was sent to Community Deposits."
-            )
-        else:
-            detail = (
-                f"Bookmarks sent: {records_sent}\n"
-                f"New deposits: {summary.get('inserted', 0)}\n"
-                "Reports matched to existing deposits: "
-                f"{summary.get('matched', 0)}\n"
-                f"Updated reports: {summary.get('updated', 0)}\n"
-                f"Server-unchanged reports: {summary.get('unchanged', 0)}"
-            )
-
-        messagebox.showinfo(
-            APP_TITLE,
-            (
-                "RhinoSpotter synchronization completed.\n\n"
-                f"Source: {source_label}\n"
-                f"Bookmarks found: {summary.get('records_found', 0)}\n"
-                f"Valid records: {summary.get('records_valid', 0)}\n"
-                f"Locally unchanged/skipped: "
-                f"{summary.get('local_unchanged', 0)}\n\n"
-                f"{detail}\n"
-                f"Errors: {errors}"
-            ),
-            parent=self,
-        )
+    def _community_credentials_changed(self, commander):
+        generation = getattr(self, "_community_credentials_generation", 0) + 1
+        self._community_credentials_generation = generation
+        self._set_community_results(COMMUNITY_FALLBACK_HEADERS, [])
+        self.status_var.set("Verifying the new Community API Key…")
+        def apply(headers, rows, error=None):
+            if self._community_credentials_generation != generation:
+                return
+            self._set_community_results(headers or COMMUNITY_FALLBACK_HEADERS, rows)
+            self.status_var.set("Community API Key could not be verified" if error else "Community API Key verified")
+        def verify():
+            try:
+                headers, rows = community_deposits.fetch_all_deposits(commander=commander)
+            except Exception:
+                self.after(0, apply, None, [], True)
+            else:
+                self.after(0, apply, headers, rows)
+        threading.Thread(target=verify, daemon=True, name="Finder-Credential-Check").start()
 
     def _rhino_upload_failed(self, message):
         self._finish_rhino_upload("RhinoSpotter upload error")
